@@ -1,0 +1,137 @@
+# One-file configuration for the full IsaacSim + ROS 2 fabric CBF stack.
+#
+# Edit this file, rebuild the bringup package if you are not using
+# --symlink-install, then run:
+#   ros2 launch fabric_sim_bringup full_sim.launch.py
+
+launch:
+  start_isaac: true
+  start_obstacle_distance: true
+  start_cbf_controller: true
+  start_teleop: true
+
+  # Isaac can take a moment before ROS topics appear. Increase these if the
+  # ROS nodes start before the simulator is ready on your machine.
+  obstacle_start_delay: 15.0
+  cbf_start_delay: 17.0
+  teleop_start_delay: 19.0
+
+  # Stop the whole launch when the IsaacSim process exits.
+  shutdown_on_isaac_exit: true
+
+shared:
+  ros_frame_id: &ros_frame_id world
+  table_hx: &table_hx 0.22
+  table_hy: &table_hy 0.22
+  table_hz: &table_hz 0.16
+  particle_radius: &particle_radius 0.008
+
+isaac_sim:
+  working_directory: /home/taha/isaacsim6_new/IsaacSim/_build/linux-x86_64/release
+  python_sh: /home/taha/isaacsim6_new/IsaacSim/_build/linux-x86_64/release/python.sh
+  script: /home/taha/ros2_colcon_ws/src/fabric_sim_isaacsim_newton/fabric_newton_isaacsim_standalone.py
+
+  # These keys map directly to the simulator CLI arguments. For example,
+  # external_cbf_enabled becomes --external-cbf-enabled.
+  arguments:
+    grid_x: 56
+    grid_y: 56
+    cell_x: 0.015
+    cell_y: 0.015
+    cloth_start_z: 0.72
+    mass_per_particle: 0.003
+    particle_radius: *particle_radius
+    table_hx: *table_hx
+    table_hy: *table_hy
+    table_hz: *table_hz
+    gripper_size: 3
+    substeps: 8
+    iterations: 10
+    linear_iterations: 16
+    state_publish_every: 3
+    tri_ke_weft: 30000.0
+    tri_ke_warp: 30000.0
+    tri_ke_shear: 6000.0
+    tri_ka: 5000.0
+    tri_kd: 0.00005
+    edge_ke_weft: 0.002
+    edge_ke_warp: 0.001
+    edge_ke_shear: 0.0005
+    edge_kd: 0.00001
+    contact_radius: 0.01
+    contact_margin: 0.012
+    contact_ke: 4000.0
+    contact_kd: 0.01
+    contact_mu: 2.0
+    ros_frame_id: *ros_frame_id
+    cmd_timeout: 1.0
+    bottom_command_max_speed: 0.0
+    disable_cuda_graph: false
+    external_cbf_enabled: true
+    cbf_command_timeout: 0.10
+    cbf_stale_policy: nominal
+
+  # Add raw simulator CLI arguments here if you later add a new option to
+  # fabric_newton_isaacsim_standalone.py before updating this file.
+  extra_args: []
+
+obstacle_distance:
+  parameters:
+    fabric_state_topic: /fabric/sim/state
+    distance_topic: /fabric/obstacle_distance
+    obstacle_id: table
+    table_center_x: 0.0
+    table_center_y: 0.0
+    table_hx: *table_hx
+    table_hy: *table_hy
+    table_hz: *table_hz
+    particle_radius: *particle_radius
+    safety_margin: 0.05
+    publish_debug_log: true
+    debug_log_period: 1.0
+
+cbf_controller:
+  parameters:
+    enabled: true
+    control_rate_hz: 10.0
+    frame_id: *ros_frame_id
+    top_left_cbf_input_topic: /fabric/top_left/cbf_input_cmd_vel
+    top_right_cbf_input_topic: /fabric/top_right/cbf_input_cmd_vel
+    obstacle_distance_topic: /fabric/obstacle_distance
+    fabric_corners_topic: /fabric/sim/corners
+    bottom_left_cbf_topic: /fabric/bottom_left/cbf_cmd_vel
+    bottom_right_cbf_topic: /fabric/bottom_right/cbf_cmd_vel
+    debug_topic: /fabric/cbf/debug
+    input_timeout: 0.25
+    distance_timeout: 0.25
+    corners_timeout: 0.50
+    activation_distance: 0.05
+    alpha_gain_near: 5.0
+    alpha_gain_far: 1.0
+    alpha_switch_h: 0.05
+    max_speed: 0.20
+    output_filter_beta: 0.0
+    weight_x: 1.0
+    weight_y: 1.0
+    weight_z: 1.0
+    jacobian_mode: normal_equal
+    min_jacobian_norm: 0.000001
+    cloth_half_width_x: 0.42
+    left_right_weight_power: 1.0
+    min_corner_weight: 0.0
+    formation_recovery_enabled: true
+    formation_recovery_gain: 0.5
+    formation_recovery_max_speed: 0.1
+    formation_recovery_deadband: 0.003
+    formation_reference_mode: initial
+    stale_policy: nominal
+    infeasible_policy: project_bounds
+    publish_debug: true
+    debug_log_enabled: true
+    debug_log_period: 1.0
+
+teleop:
+  parameters:
+    linear_speed: 0.10
+    publish_rate: 30.0
+    frame_id: *ros_frame_id
