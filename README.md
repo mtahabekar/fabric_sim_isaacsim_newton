@@ -40,7 +40,8 @@ keyboard teleop
 - creates a USD scene with a ground plane, a table box, a cloth mesh, and
   visual markers for the fabric corner targets and actual corner positions;
 - builds a Newton Style3D cloth grid with configurable resolution, material
-  stiffness, damping, particle radius, contact settings, and solver iterations;
+  stiffness, damping, particle radius, contact settings, spawn center, height,
+  and solver iterations;
 - selects square gripper patches around the four cloth corners and hard-pins
   those particles to moving corner targets;
 - subscribes to top-corner teleop commands on `/fabric/top_left/cmd_vel` and
@@ -54,12 +55,14 @@ keyboard teleop
   either CBF-safe, nominal, zero, or held bottom commands depending on the CBF
   settings and command freshness;
 - publishes simulated corner poses on `/fabric/sim/corners` and fabric particle
-  positions on `/fabric/sim/state`.
+  positions on `/fabric/sim/state`;
+- publishes lightweight frame timing on `/fabric/sim/timing`.
 
 The simulator accepts CLI arguments for cloth size, material parameters,
 contact parameters, ROS frame IDs, command timeouts, and CBF behavior. In the
 full launch path these arguments are generated from
-`fabric_sim_bringup/config/full_sim.yaml`.
+`fabric_sim_bringup/config/full_sim.yaml`. The default spawn remains centered at
+`cloth_center_x: 0.0`, `cloth_center_y: 0.0`, and `cloth_start_z: 0.72`.
 
 ### Bringup Package
 
@@ -130,6 +133,9 @@ h = min_distance - safety_margin
 Positive `h` means the closest particle is outside the configured safety
 margin. Negative `h` means the fabric has entered that margin.
 
+The distance message also includes `compute_time_ms` for experiment timing
+analysis.
+
 ### CBF Controller
 
 `fabric_cbf_controller/scripts/fabric_cbf_controller_node.py` is the external
@@ -173,6 +179,7 @@ not feasible, the configured infeasible policy is used.
 
 The debug message includes mode, solver status, barrier values, nominal and safe
 velocities, correction, Jacobian, normal, and closest-particle information.
+It also includes `compute_time_ms` for controller timing analysis.
 
 ## ROS 2 Topics
 
@@ -192,6 +199,7 @@ velocities, correction, Jacobian, normal, and closest-particle information.
 | `/robot_left/ee_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | downstream robot bridge/debugging |
 | `/robot_right/ee_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | downstream robot bridge/debugging |
 | `/fabric/cbf/debug` | `fabric_cbf_controller/msg/CbfDebug` | CBF controller | debugging/monitoring |
+| `/fabric/sim/timing` | `std_msgs/msg/Float64MultiArray` | Isaac Sim | experiment logging |
 
 ## Build
 

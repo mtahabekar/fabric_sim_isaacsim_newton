@@ -70,6 +70,7 @@ class ObstacleDistanceNode(Node):
         )
 
     def _point_cloud_callback(self, msg: PointCloud2) -> None:
+        callback_started = time.perf_counter()
         try:
             config = self._read_box_config()
             points, source_indices = self._read_xyz_points(msg)
@@ -84,6 +85,7 @@ class ObstacleDistanceNode(Node):
             out_msg = self._make_invalid_message(msg, obstacle_id, safety_margin)
             self._log_parse_or_config_error(exc)
 
+        out_msg.compute_time_ms = max(0.0, (time.perf_counter() - callback_started) * 1000.0)
         self._publisher.publish(out_msg)
         self._maybe_log_debug(out_msg)
 
@@ -292,6 +294,7 @@ class ObstacleDistanceNode(Node):
         out_msg.min_distance = closest.min_distance
         out_msg.h = closest.h
         out_msg.safety_margin = config.safety_margin
+        out_msg.compute_time_ms = 0.0
         out_msg.closest_particle_index = closest.closest_particle_index
         out_msg.closest_particle = Point(
             x=float(closest.closest_particle[0]),
@@ -323,6 +326,7 @@ class ObstacleDistanceNode(Node):
         out_msg.min_distance = float("inf")
         out_msg.h = float("inf")
         out_msg.safety_margin = safety_margin
+        out_msg.compute_time_ms = 0.0
         out_msg.closest_particle_index = -1
         out_msg.closest_particle = Point()
         out_msg.closest_obstacle_point = Point()

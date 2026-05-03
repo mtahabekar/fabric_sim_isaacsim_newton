@@ -38,6 +38,8 @@ isaac_sim:
     grid_y: 56
     cell_x: 0.015
     cell_y: 0.015
+    cloth_center_x: 0.0
+    cloth_center_y: 0.0
     cloth_start_z: 0.72
     mass_per_particle: 0.003
     particle_radius: *particle_radius

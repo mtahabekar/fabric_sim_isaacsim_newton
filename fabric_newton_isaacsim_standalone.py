@@ -9,6 +9,8 @@ _CONTROLLER_ARG_VALUE_COUNTS = {
     "--grid-y": 1,
     "--cell-x": 1,
     "--cell-y": 1,
+    "--cloth-center-x": 1,
+    "--cloth-center-y": 1,
     "--cloth-start-z": 1,
     "--mass-per-particle": 1,
     "--particle-radius": 1,
@@ -88,6 +90,7 @@ sys.argv = _ORIGINAL_ARGV
 import rclpy
 from geometry_msgs.msg import Pose, PoseArray, TwistStamped
 from sensor_msgs.msg import PointCloud2, PointField
+from std_msgs.msg import Float64MultiArray, MultiArrayDimension
 
 import newton
 from newton.solvers import style3d
@@ -293,13 +296,19 @@ class FabricRosIo:
             "/fabric/sim/state",
             10,
         )
+        self.pub_sim_timing = self.node.create_publisher(
+            Float64MultiArray,
+            "/fabric/sim/timing",
+            10,
+        )
 
         self.node.get_logger().info(
             "ROS2 bridge I/O ready: subscribing to /fabric/top_left/cmd_vel and "
             "/fabric/top_right/cmd_vel plus /fabric/bottom_left/cbf_cmd_vel and "
             "/fabric/bottom_right/cbf_cmd_vel; publishing top CBF input commands, "
             "applied bottom commands, /robot_left/ee_cmd_vel, "
-            "/robot_right/ee_cmd_vel, /fabric/sim/corners, and /fabric/sim/state."
+            "/robot_right/ee_cmd_vel, /fabric/sim/corners, /fabric/sim/state, "
+            "and /fabric/sim/timing."
         )
 
     def _top_left_cmd_cb(self, msg: TwistStamped) -> None:
@@ -453,6 +462,28 @@ class FabricRosIo:
         msg.data = points.tobytes()
         self.pub_sim_fabric_state.publish(msg)
 
+    def publish_sim_timing(
+        self,
+        *,
+        sim_time_sec: float,
+        frame_time_ms: float,
+        frame_dt_sec: float,
+    ) -> None:
+        msg = Float64MultiArray()
+        msg.layout.dim = [
+            MultiArrayDimension(
+                label="sim_time_sec,frame_time_ms,frame_dt_sec",
+                size=3,
+                stride=3,
+            ),
+        ]
+        msg.data = [
+            float(sim_time_sec),
+            float(frame_time_ms),
+            float(frame_dt_sec),
+        ]
+        self.pub_sim_timing.publish(msg)
+
     def shutdown(self) -> None:
         try:
             self.node.destroy_node()
@@ -482,6 +513,8 @@ class Style3DIsaacStandalone:
         self.cell_y = args.cell_y
         self.cloth_width = self.grid_cells_x * self.cell_x
         self.cloth_height = self.grid_cells_y * self.cell_y
+        self.cloth_center_x = float(args.cloth_center_x)
+        self.cloth_center_y = float(args.cloth_center_y)
         self.cloth_particle_radius = args.particle_radius
         self.cloth_start_z = args.cloth_start_z
 
@@ -523,7 +556,11 @@ class Style3DIsaacStandalone:
         )
 
     def _build_model(self):
-        cloth_origin = wp.vec3(-0.5 * self.cloth_width, -0.5 * self.cloth_height, self.cloth_start_z)
+        cloth_origin = wp.vec3(
+            self.cloth_center_x - 0.5 * self.cloth_width,
+            self.cloth_center_y - 0.5 * self.cloth_height,
+            self.cloth_start_z,
+        )
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverStyle3D.register_custom_attributes(builder)
@@ -725,6 +762,12 @@ class Style3DIsaacStandalone:
             f"{self.grid_cells_x}x{self.grid_cells_y} cells, "
             f"{self.grid_cells_x + 1}x{self.grid_cells_y + 1} particles, "
             f"cell=({self.cell_x:.3f}, {self.cell_y:.3f}) m"
+        )
+        print(
+            "Cloth spawn: "
+            f"center=({self.cloth_center_x:.3f}, {self.cloth_center_y:.3f}, "
+            f"{self.cloth_start_z:.3f}) m, "
+            f"size=({self.cloth_width:.3f}, {self.cloth_height:.3f}) m"
         )
         print(
             "Table box: "
@@ -949,6 +992,7 @@ class Style3DIsaacStandalone:
         if self.ros is None:
             raise RuntimeError("ROS I/O must be initialized before stepping the controller.")
 
+        frame_started = time.perf_counter()
         self.ros.spin_once()
 
         top_cmd_vels = self._get_top_corner_velocity_commands()
@@ -984,6 +1028,12 @@ class Style3DIsaacStandalone:
         self.ros.publish_simulated_fabric_corners(self._get_actual_corner_positions())
         if self._frame_index % self.state_publish_every == 0:
             self.ros.publish_simulated_fabric_state(self._cached_cloth_particles)
+        frame_time_ms = max(0.0, (time.perf_counter() - frame_started) * 1000.0)
+        self.ros.publish_sim_timing(
+            sim_time_sec=self.sim_time,
+            frame_time_ms=frame_time_ms,
+            frame_dt_sec=self.frame_dt,
+        )
         self._frame_index += 1
 
     def test_final(self) -> None:
@@ -1036,6 +1086,18 @@ def parse_args():
     parser.add_argument("--grid-y", type=int, default=56, help="Cloth cells along Y.")
     parser.add_argument("--cell-x", type=float, default=0.015, help="Cloth cell size along X in meters.")
     parser.add_argument("--cell-y", type=float, default=0.015, help="Cloth cell size along Y in meters.")
+    parser.add_argument(
+        "--cloth-center-x",
+        type=float,
+        default=0.0,
+        help="Initial cloth center X position in meters.",
+    )
+    parser.add_argument(
+        "--cloth-center-y",
+        type=float,
+        default=0.0,
+        help="Initial cloth center Y position in meters.",
+    )
     parser.add_argument("--cloth-start-z", type=float, default=0.72, help="Initial cloth height in meters.")
     parser.add_argument("--mass-per-particle", type=float, default=0.003, help="Style3D mass per particle.")
     parser.add_argument("--particle-radius", type=float, default=0.008, help="Cloth particle radius in meters.")

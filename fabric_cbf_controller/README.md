@@ -88,9 +88,87 @@ python3 standalone_controller_codex.py --external-cbf-enabled --cbf-stale-policy
 In this architecture, IsaacSim's `--cbf-stale-policy nominal` means "use the
 top velocities directly for the bottom corners if CBF output is stale."
 
+## Stretch Avoidance
+
+The controller enforces stretch-avoidance CBF constraints that prevent the
+fabric from being overstretched between its hold-points. The barrier function
+for a pair (i, j) is:
+
+```
+h_stretch_ij = d_max_ij - ||x_j - x_i||
+```
+
+Positive h means the fabric is within the safe distance limit; negative means
+it is already overstretched.
+
+### ROS Parameters
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `stretch_enabled` | bool | `True` | Enable all stretch constraints |
+| `stretch_alpha_gain` | float | `1.0` | Class-K gain α(h) = gain × h |
+| `stretch_velocity_filter_beta` | float | `0.8` | Low-pass filter for corner velocity estimates (0 = no filter, 0.99 = heavy) |
+| `d_max_bl_tl` | float | `0.85` m | Max allowed distance BL↔TL (left vertical edge) |
+| `d_max_br_tr` | float | `0.85` m | Max allowed distance BR↔TR (right vertical edge) |
+| `d_max_bl_br` | float | `0.85` m | Max allowed distance BL↔BR (bottom horizontal edge) |
+| `d_max_bl_tr_enabled` | bool | `False` | Enable left-to-right diagonal constraint BL↔TR |
+| `d_max_bl_tr` | float | `1.2` m | Max allowed distance BL↔TR (diagonal) |
+| `d_max_br_tl_enabled` | bool | `False` | Enable right-to-left diagonal constraint BR↔TL |
+| `d_max_br_tl` | float | `1.2` m | Max allowed distance BR↔TL (diagonal) |
+
+### Corner topology
+
+Corner indices on `/fabric/sim/corners` (PoseArray):
+- `[0]` = bottom-left (BL) — controllable
+- `[1]` = bottom-right (BR) — controllable
+- `[2]` = top-left (TL) — passive (velocity estimated)
+- `[3]` = top-right (TR) — passive (velocity estimated)
+
+Active pairs by default: BL↔TL, BR↔TR, BL↔BR (two rows).
+
+### Enable/disable pairs at runtime
+
+```bash
+# Disable all stretch constraints
+ros2 param set /fabric_cbf_controller_node stretch_enabled false
+
+# Enable the left-to-right diagonal
+ros2 param set /fabric_cbf_controller_node d_max_bl_tr_enabled true
+
+# Change the left-edge limit
+ros2 param set /fabric_cbf_controller_node d_max_bl_tl 0.90
+```
+
+### Expected behavior
+
+When the top corners are pulled far apart (TL and TR moving away from BL/BR),
+the stretch constraints resist and eventually prevent the bottom corners from
+following. When a pair is overstretched (h < 0) the RHS becomes positive,
+forcing the bottom corners to converge toward the limit.
+
+### Monitoring
+
+```bash
+ros2 topic echo /fabric/cbf/debug
+```
+
+Watch `stretch_h_values` approach 0 as the fabric nears its limit and
+`stretch_active` flip to `True` when at least one constraint is active.
+`stretch_pair_names` lists which pairs are currently monitored and their
+order matches `stretch_h_values`, `stretch_distances`, and
+`stretch_d_max_values`.
+
+### Running tests
+
+```bash
+cd /home/taha/ros2_colcon_ws/src/fabric_sim_isaacsim_newton
+python3 -m pytest fabric_cbf_controller/test/test_stretch_cbf.py -v
+```
+
 ## Notes
 
-This first implementation only filters obstacle-avoidance CBF constraints for
-bottom-left and bottom-right velocity commands. It does not run internal
-IsaacSim rollouts, it does not implement overstretching CBFs, and it does not
+The controller filters both obstacle-avoidance and stretch-avoidance CBF
+constraints for bottom-left and bottom-right velocity commands. When both are
+active simultaneously the combined QP is solved via iterative weighted
+half-plane projection. It does not run internal IsaacSim rollouts and does not
 implement proximity CBFs.

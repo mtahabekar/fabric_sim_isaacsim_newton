@@ -54,6 +54,13 @@ class FabricCbfControllerNode(Node):
         self._last_recovery_velocity = np.zeros((2, 3), dtype=np.float64)
         self._warned_unsupported_formation_reference_mode = False
 
+        self._prev_corners_positions: dict[str, np.ndarray] = {}
+        self._prev_corners_time: float | None = None
+        self._corner_velocity_estimates: dict[str, np.ndarray] = {
+            name: np.zeros(3, dtype=np.float64) for name in ("BL", "BR", "TL", "TR")
+        }
+        self._stretch_barrier_values: dict[str, dict] = {}
+
         self._create_ros_interfaces()
 
         control_rate_hz = self._float_param("control_rate_hz", 60.0, minimum=1.0e-3)
@@ -108,6 +115,16 @@ class FabricCbfControllerNode(Node):
             "publish_debug": True,
             "debug_log_enabled": True,
             "debug_log_period": 1.0,
+            "stretch_enabled": True,
+            "stretch_alpha_gain": 1.0,
+            "stretch_velocity_filter_beta": 0.8,
+            "d_max_bl_tl": 0.85,
+            "d_max_br_tr": 0.85,
+            "d_max_bl_br": 0.85,
+            "d_max_bl_tr_enabled": False,
+            "d_max_bl_tr": 1.2,
+            "d_max_br_tl_enabled": False,
+            "d_max_br_tl": 1.2,
         }
 
         for name, default_value in declarations.items():
@@ -168,11 +185,13 @@ class FabricCbfControllerNode(Node):
         self._distance_time = time.monotonic()
 
     def _corners_callback(self, msg: PoseArray) -> None:
+        self._update_corner_velocity_estimates(msg)
         self._corners_msg = msg
         self._corners_time = time.monotonic()
         self._capture_formation_reference(msg)
 
     def _control_timer_callback(self) -> None:
+        callback_started = time.perf_counter()
         now_monotonic = time.monotonic()
         enabled = self._bool_param("enabled", True)
         input_ready = self._input_is_ready(now_monotonic)
@@ -198,6 +217,7 @@ class FabricCbfControllerNode(Node):
             rhs = -alpha_h
             jacobian, normal = self.compute_jacobian(distance_msg, corners_msg)
 
+        stretch_active = False
         if not enabled:
             if input_ready:
                 safe = nominal
@@ -213,26 +233,39 @@ class FabricCbfControllerNode(Node):
             mode = "invalid_distance"
         else:
             activation_distance = self._float_param("activation_distance", 0.0)
-            if h > activation_distance:
+            weights = self._control_weights()
+            max_speed = self._float_param("max_speed", 0.10, minimum=0.0)
+            min_jacobian_norm = self._float_param("min_jacobian_norm", 1.0e-6, minimum=0.0)
+
+            obstacle_in_range = h <= activation_distance
+
+            stretch_constraints: list[tuple[np.ndarray, float]] = []
+            if self._bool_param("stretch_enabled", True) and corners_msg is not None:
+                stretch_constraints = self._build_stretch_constraints(corners_msg)
+                stretch_active = bool(stretch_constraints)
+
+            if not obstacle_in_range and not stretch_constraints:
                 safe = nominal
                 active = False
                 mode = "inactive"
                 solver_status = "nominal_feasible"
-            else:
+            elif obstacle_in_range and not stretch_constraints:
                 active = True
                 mode = "active"
-                weights = self._control_weights()
-                max_speed = self._float_param("max_speed", 0.10, minimum=0.0)
-                min_jacobian_norm = self._float_param(
-                    "min_jacobian_norm", 1.0e-6, minimum=0.0
-                )
                 result = self.solve_projection_qp(
-                    nominal,
-                    jacobian,
-                    rhs,
-                    weights,
-                    max_speed,
-                    min_jacobian_norm,
+                    nominal, jacobian, rhs, weights, max_speed, min_jacobian_norm,
+                )
+                safe = result.velocity
+                solver_status = result.solver_status
+            else:
+                active = obstacle_in_range
+                mode = "active"
+                all_constraints: list[tuple[np.ndarray, float]] = []
+                if obstacle_in_range:
+                    all_constraints.append((jacobian, rhs))
+                all_constraints.extend(stretch_constraints)
+                result = self._solve_combined_qp(
+                    nominal, all_constraints, weights, max_speed,
                 )
                 safe = result.velocity
                 solver_status = result.solver_status
@@ -243,6 +276,7 @@ class FabricCbfControllerNode(Node):
 
         lhs_nominal = float(np.dot(jacobian, self._finite_vector(nominal, 6)))
         lhs_safe = float(np.dot(jacobian, safe))
+        compute_time_ms = max(0.0, (time.perf_counter() - callback_started) * 1000.0)
         self._publish_debug(
             enabled=enabled,
             active=active,
@@ -259,11 +293,13 @@ class FabricCbfControllerNode(Node):
             lhs_nominal=lhs_nominal,
             lhs_safe=lhs_safe,
             rhs=rhs,
+            compute_time_ms=compute_time_ms,
             jacobian=jacobian,
             nominal_velocity=nominal,
             safe_velocity=safe,
             normal=normal,
             distance_msg=distance_msg,
+            stretch_active=stretch_active,
         )
 
         self._maybe_log_debug(
@@ -385,6 +421,155 @@ class FabricCbfControllerNode(Node):
 
         safe = self._finite_vector(project_for_lambda(hi), 6)
         return ProjectionResult(safe, "projected")
+
+    def _update_corner_velocity_estimates(self, msg: PoseArray) -> None:
+        if len(msg.poses) < 4:
+            return
+        now = time.monotonic()
+        names = ("BL", "BR", "TL", "TR")
+        positions: dict[str, np.ndarray] = {}
+        for i, name in enumerate(names):
+            pos = self._point_to_array(msg.poses[i].position)
+            if not np.isfinite(pos).all():
+                return
+            positions[name] = pos
+
+        if self._prev_corners_time is not None:
+            dt = now - self._prev_corners_time
+            if dt > 1.0e-6:
+                beta = min(0.99, max(0.0, self._float_param("stretch_velocity_filter_beta", 0.8)))
+                for name in names:
+                    if name in self._prev_corners_positions:
+                        raw_vel = (positions[name] - self._prev_corners_positions[name]) / dt
+                        prev_vel = self._corner_velocity_estimates[name]
+                        self._corner_velocity_estimates[name] = (
+                            beta * prev_vel + (1.0 - beta) * raw_vel
+                        ).astype(np.float64)
+
+        self._prev_corners_positions = positions
+        self._prev_corners_time = now
+
+    def _build_stretch_constraints(
+        self,
+        corners_msg: PoseArray,
+    ) -> list[tuple[np.ndarray, float]]:
+        """
+        Returns a list of (row_vector_6, rhs_scalar) tuples, one per
+        active stretch constraint, ready to be added to the QP.
+        Each tuple represents:  row_vec @ u >= rhs
+        """
+        positions = self._formation_corner_positions(corners_msg)
+        if positions is None:
+            return []
+        bl, br, tl, tr = positions
+
+        alpha_gain = self._float_param("stretch_alpha_gain", 1.0)
+        v_bl = self._corner_velocity_estimates["BL"]
+        v_br = self._corner_velocity_estimates["BR"]
+        v_tl = self._corner_velocity_estimates["TL"]
+        v_tr = self._corner_velocity_estimates["TR"]
+
+        constraints: list[tuple[np.ndarray, float]] = []
+        self._stretch_barrier_values = {}
+
+        def _add(
+            pair_name: str,
+            pos_i: np.ndarray,
+            pos_j: np.ndarray,
+            d_max: float,
+            v_j: np.ndarray,
+            i_is_bl: bool,
+        ) -> None:
+            diff = pos_j - pos_i
+            dist = float(np.linalg.norm(diff))
+            if dist < 1.0e-6:
+                return
+            a_ij = diff / dist
+            h = d_max - dist
+            alpha_h = alpha_gain * h
+            rhs = float(-alpha_h + np.dot(a_ij, v_j))
+            row = (
+                np.concatenate([a_ij, np.zeros(3)])
+                if i_is_bl
+                else np.concatenate([np.zeros(3), a_ij])
+            )
+            constraints.append((row, rhs))
+            self._stretch_barrier_values[pair_name] = {
+                "h": h,
+                "dist": dist,
+                "d_max": d_max,
+            }
+
+        # Left vertical edge: i=BL (controllable, slot 0:3), j=TL (passive)
+        _add("BL-TL", bl, tl, self._float_param("d_max_bl_tl", 0.85), v_tl, True)
+
+        # Right vertical edge: i=BR (controllable, slot 3:6), j=TR (passive)
+        _add("BR-TR", br, tr, self._float_param("d_max_br_tr", 0.85), v_tr, False)
+
+        # Bottom horizontal edge: both controllable — two constraint rows
+        d_max_blbr = self._float_param("d_max_bl_br", 0.85)
+        _add("BL-BR(BL)", bl, br, d_max_blbr, v_br, True)   # i=BL, j=BR
+        _add("BL-BR(BR)", br, bl, d_max_blbr, v_bl, False)  # i=BR, j=BL
+
+        # Optional diagonals
+        if self._bool_param("d_max_bl_tr_enabled", False):
+            _add("BL-TR", bl, tr, self._float_param("d_max_bl_tr", 1.2), v_tr, True)
+
+        if self._bool_param("d_max_br_tl_enabled", False):
+            _add("BR-TL", br, tl, self._float_param("d_max_br_tl", 1.2), v_tl, False)
+
+        return constraints
+
+    def _solve_combined_qp(
+        self,
+        nominal: np.ndarray,
+        constraints: list[tuple[np.ndarray, float]],
+        weights: np.ndarray,
+        max_speed: float,
+    ) -> ProjectionResult:
+        """Solve the CBF QP with multiple linear inequality constraints.
+
+        Uses iterative weighted half-plane projection (alternating projections)
+        which converges for non-empty convex feasible sets.
+        """
+        nominal = self._finite_vector(nominal, 6)
+        weights = self._positive_weights(weights)
+        max_speed = max(0.0, self._finite_scalar(max_speed, 0.0))
+        tolerance = 1.0e-10
+
+        nominal_clipped = np.clip(nominal, -max_speed, max_speed)
+
+        if not constraints:
+            return ProjectionResult(nominal_clipped, "nominal_feasible")
+
+        if all(float(np.dot(row, nominal_clipped)) >= rhs - tolerance for row, rhs in constraints):
+            return ProjectionResult(nominal_clipped, "nominal_feasible")
+
+        inv_weights_sq = 1.0 / np.maximum(weights * weights, 1.0e-12)
+        u = nominal_clipped.copy()
+
+        for _ in range(200):
+            u_prev = u.copy()
+            for row, rhs in constraints:
+                lhs = float(np.dot(row, u))
+                violation = rhs - lhs
+                if violation > tolerance:
+                    row_norm_sq = float(np.dot(row, row * inv_weights_sq))
+                    if row_norm_sq > 1.0e-12:
+                        lam = violation / row_norm_sq
+                        u = np.clip(u + lam * row * inv_weights_sq, -max_speed, max_speed)
+            if float(np.max(np.abs(u - u_prev))) < 1.0e-9:
+                break
+
+        u = self._finite_vector(u, 6)
+
+        if not all(float(np.dot(row, u)) >= rhs - 1.0e-6 for row, rhs in constraints):
+            fallback = self._apply_infeasible_policy(
+                "infeasible_velocity_bounds", nominal_clipped, max_speed
+            )
+            return ProjectionResult(self._finite_vector(fallback, 6), "infeasible_velocity_bounds")
+
+        return ProjectionResult(u, "projected")
 
     def _compute_left_right_weights(
         self,
@@ -516,11 +701,13 @@ class FabricCbfControllerNode(Node):
         lhs_nominal: float,
         lhs_safe: float,
         rhs: float,
+        compute_time_ms: float,
         jacobian: np.ndarray,
         nominal_velocity: np.ndarray,
         safe_velocity: np.ndarray,
         normal: np.ndarray,
         distance_msg: ObstacleDistance | None,
+        stretch_active: bool = False,
     ) -> None:
         if not self._bool_param("publish_debug", True):
             return
@@ -543,6 +730,7 @@ class FabricCbfControllerNode(Node):
         msg.lhs_nominal = self._finite_scalar(lhs_nominal, 0.0)
         msg.lhs_safe = self._finite_scalar(lhs_safe, 0.0)
         msg.rhs = self._finite_scalar(rhs, 0.0)
+        msg.compute_time_ms = self._finite_scalar(compute_time_ms, 0.0)
         msg.jacobian = self._finite_vector(jacobian, 6).tolist()
         msg.nominal_velocity = self._finite_vector(nominal_velocity, 6).tolist()
         msg.safe_velocity = self._finite_vector(safe_velocity, 6).tolist()
@@ -561,6 +749,21 @@ class FabricCbfControllerNode(Node):
             msg.closest_obstacle_point = self._make_point(
                 self._point_to_array(distance_msg.closest_obstacle_point)
             )
+
+        barrier = self._stretch_barrier_values
+        if barrier:
+            pairs = sorted(barrier.keys())
+            msg.stretch_pair_names = pairs
+            msg.stretch_h_values = [
+                self._finite_scalar(barrier[p]["h"], 0.0) for p in pairs
+            ]
+            msg.stretch_distances = [
+                self._finite_scalar(barrier[p]["dist"], 0.0) for p in pairs
+            ]
+            msg.stretch_d_max_values = [
+                self._finite_scalar(barrier[p]["d_max"], 0.0) for p in pairs
+            ]
+        msg.stretch_active = bool(stretch_active)
 
         self._debug_pub.publish(msg)
 
