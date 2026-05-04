@@ -1,25 +1,25 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 """
-ROS2 keyboard teleop node for fabric corner velocity commands.
+ROS2 keyboard teleop node for fabric leader velocity commands.
 
 Publishes constant velocity commands while keys are held; zeros when released.
 Uses pynput for reliable key-press/release detection in a background thread.
 
 Key mappings
 ------------
-  Top-left corner  (topics: /fabric/top_left/cmd_vel)
+  Leader left  (topic: /fabric/leader_left/cmd_vel)
     w / s  =>  +x / -x
     d / a  =>  +y / -y
     e / q  =>  +z / -z
 
-  Top-right corner  (topics: /fabric/top_right/cmd_vel)
+  Leader right  (topic: /fabric/leader_right/cmd_vel)
     i / k  =>  +x / -x
     l / j  =>  +y / -y
     o / u  =>  +z / -z
 
-Both corners can be controlled simultaneously. Opposing keys on the same axis cancel.
-Use Ctrl+C to quit — do NOT use q as a quit key (q is the top-left -z command).
+Both leaders can be controlled simultaneously. Opposing keys on the same axis cancel.
+Use Ctrl+C to quit — do NOT use q as a quit key (q is the leader-left -z command).
 
 Dependencies
 ------------
@@ -47,18 +47,18 @@ except ImportError as exc:
     ) from exc
 
 
-# Maps each key character to (corner_slot, axis, sign).
-#   corner_slot 0 = top_left, 1 = top_right
+# Maps each key character to (leader_slot, axis, sign).
+#   leader_slot 0 = leader_left, 1 = leader_right
 #   axis        0 = x,        1 = y,      2 = z
 _KEY_MAP: dict[str, tuple[int, int, float]] = {
-    # top_left
+    # leader_left
     "w": (0, 0, +1.0),
     "s": (0, 0, -1.0),
     "d": (0, 1, +1.0),
     "a": (0, 1, -1.0),
     "e": (0, 2, +1.0),
     "q": (0, 2, -1.0),
-    # top_right
+    # leader_right
     "i": (1, 0, +1.0),
     "k": (1, 0, -1.0),
     "l": (1, 1, +1.0),
@@ -80,11 +80,11 @@ class FabricCornerTeleop(Node):
         publish_rate = float(self.get_parameter("publish_rate").value)
         self._frame_id = str(self.get_parameter("frame_id").value)
 
-        self._pub_top_left = self.create_publisher(
-            TwistStamped, "/fabric/top_left/cmd_vel", 10
+        self._pub_leader_left = self.create_publisher(
+            TwistStamped, "/fabric/leader_left/cmd_vel", 10
         )
-        self._pub_top_right = self.create_publisher(
-            TwistStamped, "/fabric/top_right/cmd_vel", 10
+        self._pub_leader_right = self.create_publisher(
+            TwistStamped, "/fabric/leader_right/cmd_vel", 10
         )
 
         self._pressed: set[str] = set()
@@ -100,8 +100,8 @@ class FabricCornerTeleop(Node):
 
         self.get_logger().info(
             f"Keyboard teleop ready  speed={self._speed} m/s  rate={publish_rate} Hz\n"
-            "  top_left : w/s=±x  d/a=±y  e/q=±z\n"
-            "  top_right: i/k=±x  l/j=±y  o/u=±z\n"
+            "  leader_left : w/s=±x  d/a=±y  e/q=±z\n"
+            "  leader_right: i/k=±x  l/j=±y  o/u=±z\n"
             "  Ctrl+C to quit."
         )
 
@@ -127,7 +127,7 @@ class FabricCornerTeleop(Node):
     # ----- Velocity computation --------------------------------------------------
 
     def _compute_corner_vels(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return (top_left_vel, top_right_vel), each shape (3,)."""
+        """Return (leader_left_vel, leader_right_vel), each shape (3,)."""
         with self._lock:
             keys = frozenset(self._pressed)
 
@@ -151,9 +151,9 @@ class FabricCornerTeleop(Node):
         return msg
 
     def _timer_cb(self) -> None:
-        top_left_vel, top_right_vel = self._compute_corner_vels()
-        self._pub_top_left.publish(self._make_twist(top_left_vel))
-        self._pub_top_right.publish(self._make_twist(top_right_vel))
+        leader_left_vel, leader_right_vel = self._compute_corner_vels()
+        self._pub_leader_left.publish(self._make_twist(leader_left_vel))
+        self._pub_leader_right.publish(self._make_twist(leader_right_vel))
 
     # ----- Cleanup ---------------------------------------------------------------
 

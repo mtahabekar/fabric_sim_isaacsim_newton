@@ -3,7 +3,7 @@ std_msgs/Header header
 bool enabled
 bool active
 bool valid_distance
-# True when the top CBF input velocity topics are fresh.
+# True when the leader CBF input velocity topics are fresh.
 bool nominal_ready
 bool command_published
 
@@ -21,8 +21,9 @@ float64 rhs
 float64 compute_time_ms
 
 float64[] jacobian
-# QP nominal input: top-left/top-right velocities mapped as desired
-# bottom-left/bottom-right velocities.
+# QP nominal input: leader-left/leader-right velocities mapped as desired
+# follower-left/follower-right velocities. Legacy top/bottom topic aliases may
+# still be enabled for backward compatibility.
 float64[] nominal_velocity
 float64[] safe_velocity
 float64[] correction

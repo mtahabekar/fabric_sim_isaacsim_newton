@@ -67,7 +67,7 @@ isaac_sim:
     contact_mu: 2.0
     ros_frame_id: *ros_frame_id
     cmd_timeout: 1.0
-    bottom_command_max_speed: 0.0
+    follower_command_max_speed: 0.0
     disable_cuda_graph: false
     external_cbf_enabled: true
     cbf_command_timeout: 0.10
@@ -97,12 +97,12 @@ cbf_controller:
     enabled: true
     control_rate_hz: 10.0
     frame_id: *ros_frame_id
-    top_left_cbf_input_topic: /fabric/top_left/cbf_input_cmd_vel
-    top_right_cbf_input_topic: /fabric/top_right/cbf_input_cmd_vel
+    leader_left_cbf_input_topic: /fabric/leader_left/cbf_input_cmd_vel
+    leader_right_cbf_input_topic: /fabric/leader_right/cbf_input_cmd_vel
     obstacle_distance_topic: /fabric/obstacle_distance
     fabric_corners_topic: /fabric/sim/corners
-    bottom_left_cbf_topic: /fabric/bottom_left/cbf_cmd_vel
-    bottom_right_cbf_topic: /fabric/bottom_right/cbf_cmd_vel
+    follower_left_cbf_topic: /fabric/follower_left/cbf_cmd_vel
+    follower_right_cbf_topic: /fabric/follower_right/cbf_cmd_vel
     debug_topic: /fabric/cbf/debug
     input_timeout: 0.25
     distance_timeout: 0.25

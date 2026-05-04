@@ -7,6 +7,7 @@ string obstacle_id
 float64 min_distance
 float64 h
 float64 safety_margin
+float64 compute_time_ms
 
 int32 closest_particle_index
 

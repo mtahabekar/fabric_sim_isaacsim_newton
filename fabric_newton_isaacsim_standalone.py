@@ -11,6 +11,8 @@ _CONTROLLER_ARG_VALUE_COUNTS = {
     "--cell-y": 1,
     "--cloth-center-x": 1,
     "--cloth-center-y": 1,
+    "--cloth-start-x": 1,
+    "--cloth-start-y": 1,
     "--cloth-start-z": 1,
     "--mass-per-particle": 1,
     "--particle-radius": 1,
@@ -39,6 +41,8 @@ _CONTROLLER_ARG_VALUE_COUNTS = {
     "--ros-frame-id": 1,
     "--cmd-timeout": 1,
     "--bottom-command-max-speed": 1,
+    "--follower-command-max-speed": 1,
+    "--follower-start-y-offset": 1,
     "--disable-cuda-graph": 0,
     "--external-cbf-enabled": 0,
     "--cbf-command-timeout": 1,
@@ -90,16 +94,43 @@ sys.argv = _ORIGINAL_ARGV
 import rclpy
 from geometry_msgs.msg import Pose, PoseArray, TwistStamped
 from sensor_msgs.msg import PointCloud2, PointField
-from std_msgs.msg import Float64MultiArray, MultiArrayDimension
+from std_msgs.msg import Float32MultiArray, Float64MultiArray, MultiArrayDimension
 
 import newton
 from newton.solvers import style3d
 
 
-IDX_BOTTOM_LEFT = 0
-IDX_BOTTOM_RIGHT = 1
-IDX_TOP_LEFT = 2
-IDX_TOP_RIGHT = 3
+IDX_FOLLOWER_LEFT = 0
+IDX_FOLLOWER_RIGHT = 1
+IDX_LEADER_LEFT = 2
+IDX_LEADER_RIGHT = 3
+
+LEADER_LEFT_CMD_TOPICS = ("/fabric/leader_left/cmd_vel", "/fabric/top_left/cmd_vel")
+LEADER_RIGHT_CMD_TOPICS = ("/fabric/leader_right/cmd_vel", "/fabric/top_right/cmd_vel")
+LEADER_LEFT_CBF_INPUT_TOPICS = (
+    "/fabric/leader_left/cbf_input_cmd_vel",
+    "/fabric/top_left/cbf_input_cmd_vel",
+)
+LEADER_RIGHT_CBF_INPUT_TOPICS = (
+    "/fabric/leader_right/cbf_input_cmd_vel",
+    "/fabric/top_right/cbf_input_cmd_vel",
+)
+FOLLOWER_LEFT_CBF_TOPICS = (
+    "/fabric/follower_left/cbf_cmd_vel",
+    "/fabric/bottom_left/cbf_cmd_vel",
+)
+FOLLOWER_RIGHT_CBF_TOPICS = (
+    "/fabric/follower_right/cbf_cmd_vel",
+    "/fabric/bottom_right/cbf_cmd_vel",
+)
+FOLLOWER_LEFT_APPLIED_TOPICS = (
+    "/fabric/follower_left/applied_cmd_vel",
+    "/fabric/bottom_left/applied_cmd_vel",
+)
+FOLLOWER_RIGHT_APPLIED_TOPICS = (
+    "/fabric/follower_right/applied_cmd_vel",
+    "/fabric/bottom_right/applied_cmd_vel",
+)
 
 
 @wp.kernel
@@ -222,39 +253,31 @@ class FabricRosIo:
         self.cmd_timeout = float(cmd_timeout)
         self.cbf_cmd_timeout = float(cbf_cmd_timeout)
 
-        self.latest_top_left_cmd_vel = np.zeros(3, dtype=np.float32)
-        self.latest_top_right_cmd_vel = np.zeros(3, dtype=np.float32)
-        self.latest_top_left_cmd_time: float | None = None
-        self.latest_top_right_cmd_time: float | None = None
-        self.latest_bottom_left_cbf_vel = np.zeros(3, dtype=np.float32)
-        self.latest_bottom_right_cbf_vel = np.zeros(3, dtype=np.float32)
-        self.latest_bottom_left_cbf_time: float | None = None
-        self.latest_bottom_right_cbf_time: float | None = None
+        self.latest_leader_left_cmd_vel = np.zeros(3, dtype=np.float32)
+        self.latest_leader_right_cmd_vel = np.zeros(3, dtype=np.float32)
+        self.latest_leader_left_cmd_time: float | None = None
+        self.latest_leader_right_cmd_time: float | None = None
+        self.latest_follower_left_cbf_vel = np.zeros(3, dtype=np.float32)
+        self.latest_follower_right_cbf_vel = np.zeros(3, dtype=np.float32)
+        self.latest_follower_left_cbf_time: float | None = None
+        self.latest_follower_right_cbf_time: float | None = None
 
-        self.sub_top_left_cmd = self.node.create_subscription(
-            TwistStamped,
-            "/fabric/top_left/cmd_vel",
-            self._top_left_cmd_cb,
-            10,
-        )
-        self.sub_top_right_cmd = self.node.create_subscription(
-            TwistStamped,
-            "/fabric/top_right/cmd_vel",
-            self._top_right_cmd_cb,
-            10,
-        )
-        self.sub_bottom_left_cbf_cmd = self.node.create_subscription(
-            TwistStamped,
-            "/fabric/bottom_left/cbf_cmd_vel",
-            self._bottom_left_cbf_cb,
-            10,
-        )
-        self.sub_bottom_right_cbf_cmd = self.node.create_subscription(
-            TwistStamped,
-            "/fabric/bottom_right/cbf_cmd_vel",
-            self._bottom_right_cbf_cb,
-            10,
-        )
+        self.sub_leader_left_cmds = [
+            self.node.create_subscription(TwistStamped, topic, self._leader_left_cmd_cb, 10)
+            for topic in LEADER_LEFT_CMD_TOPICS
+        ]
+        self.sub_leader_right_cmds = [
+            self.node.create_subscription(TwistStamped, topic, self._leader_right_cmd_cb, 10)
+            for topic in LEADER_RIGHT_CMD_TOPICS
+        ]
+        self.sub_follower_left_cbf_cmds = [
+            self.node.create_subscription(TwistStamped, topic, self._follower_left_cbf_cb, 10)
+            for topic in FOLLOWER_LEFT_CBF_TOPICS
+        ]
+        self.sub_follower_right_cbf_cmds = [
+            self.node.create_subscription(TwistStamped, topic, self._follower_right_cbf_cb, 10)
+            for topic in FOLLOWER_RIGHT_CBF_TOPICS
+        ]
 
         self.pub_left_robot_cmd = self.node.create_publisher(
             TwistStamped,
@@ -266,26 +289,22 @@ class FabricRosIo:
             "/robot_right/ee_cmd_vel",
             10,
         )
-        self.pub_top_left_cbf_input_cmd = self.node.create_publisher(
-            TwistStamped,
-            "/fabric/top_left/cbf_input_cmd_vel",
-            10,
-        )
-        self.pub_top_right_cbf_input_cmd = self.node.create_publisher(
-            TwistStamped,
-            "/fabric/top_right/cbf_input_cmd_vel",
-            10,
-        )
-        self.pub_bottom_left_applied_cmd = self.node.create_publisher(
-            TwistStamped,
-            "/fabric/bottom_left/applied_cmd_vel",
-            10,
-        )
-        self.pub_bottom_right_applied_cmd = self.node.create_publisher(
-            TwistStamped,
-            "/fabric/bottom_right/applied_cmd_vel",
-            10,
-        )
+        self.pub_leader_left_cbf_input_cmds = [
+            self.node.create_publisher(TwistStamped, topic, 10)
+            for topic in LEADER_LEFT_CBF_INPUT_TOPICS
+        ]
+        self.pub_leader_right_cbf_input_cmds = [
+            self.node.create_publisher(TwistStamped, topic, 10)
+            for topic in LEADER_RIGHT_CBF_INPUT_TOPICS
+        ]
+        self.pub_follower_left_applied_cmds = [
+            self.node.create_publisher(TwistStamped, topic, 10)
+            for topic in FOLLOWER_LEFT_APPLIED_TOPICS
+        ]
+        self.pub_follower_right_applied_cmds = [
+            self.node.create_publisher(TwistStamped, topic, 10)
+            for topic in FOLLOWER_RIGHT_APPLIED_TOPICS
+        ]
         self.pub_sim_fabric_corners = self.node.create_publisher(
             PoseArray,
             "/fabric/sim/corners",
@@ -301,47 +320,53 @@ class FabricRosIo:
             "/fabric/sim/timing",
             10,
         )
+        self.pub_sim_perf = self.node.create_publisher(
+            Float32MultiArray,
+            "/fabric/sim/perf",
+            10,
+        )
 
         self.node.get_logger().info(
-            "ROS2 bridge I/O ready: subscribing to /fabric/top_left/cmd_vel and "
-            "/fabric/top_right/cmd_vel plus /fabric/bottom_left/cbf_cmd_vel and "
-            "/fabric/bottom_right/cbf_cmd_vel; publishing top CBF input commands, "
-            "applied bottom commands, /robot_left/ee_cmd_vel, "
-            "/robot_right/ee_cmd_vel, /fabric/sim/corners, /fabric/sim/state, "
-            "and /fabric/sim/timing."
+            "ROS2 bridge I/O ready: subscribing to leader command topics "
+            "(/fabric/leader_left/cmd_vel, /fabric/leader_right/cmd_vel) and follower "
+            "CBF command topics (/fabric/follower_left/cbf_cmd_vel, "
+            "/fabric/follower_right/cbf_cmd_vel); legacy top/bottom topic aliases remain "
+            "enabled. Publishing leader CBF inputs, applied follower commands, "
+            "/robot_left/ee_cmd_vel, /robot_right/ee_cmd_vel, "
+            "/fabric/sim/corners, /fabric/sim/state, and /fabric/sim/timing."
         )
 
-    def _top_left_cmd_cb(self, msg: TwistStamped) -> None:
-        self.latest_top_left_cmd_vel[:] = (
+    def _leader_left_cmd_cb(self, msg: TwistStamped) -> None:
+        self.latest_leader_left_cmd_vel[:] = (
             float(msg.twist.linear.x),
             float(msg.twist.linear.y),
             float(msg.twist.linear.z),
         )
-        self.latest_top_left_cmd_time = time.monotonic()
+        self.latest_leader_left_cmd_time = time.monotonic()
 
-    def _top_right_cmd_cb(self, msg: TwistStamped) -> None:
-        self.latest_top_right_cmd_vel[:] = (
+    def _leader_right_cmd_cb(self, msg: TwistStamped) -> None:
+        self.latest_leader_right_cmd_vel[:] = (
             float(msg.twist.linear.x),
             float(msg.twist.linear.y),
             float(msg.twist.linear.z),
         )
-        self.latest_top_right_cmd_time = time.monotonic()
+        self.latest_leader_right_cmd_time = time.monotonic()
 
-    def _bottom_left_cbf_cb(self, msg: TwistStamped) -> None:
-        self.latest_bottom_left_cbf_vel[:] = (
+    def _follower_left_cbf_cb(self, msg: TwistStamped) -> None:
+        self.latest_follower_left_cbf_vel[:] = (
             float(msg.twist.linear.x),
             float(msg.twist.linear.y),
             float(msg.twist.linear.z),
         )
-        self.latest_bottom_left_cbf_time = time.monotonic()
+        self.latest_follower_left_cbf_time = time.monotonic()
 
-    def _bottom_right_cbf_cb(self, msg: TwistStamped) -> None:
-        self.latest_bottom_right_cbf_vel[:] = (
+    def _follower_right_cbf_cb(self, msg: TwistStamped) -> None:
+        self.latest_follower_right_cbf_vel[:] = (
             float(msg.twist.linear.x),
             float(msg.twist.linear.y),
             float(msg.twist.linear.z),
         )
-        self.latest_bottom_right_cbf_time = time.monotonic()
+        self.latest_follower_right_cbf_time = time.monotonic()
 
     def spin_once(self) -> None:
         # A tiny bounded wait avoids a zero-time rclpy poll during Kit/ROS startup,
@@ -361,29 +386,29 @@ class FabricRosIo:
     def _get_recent_cmd(self, vel: np.ndarray, stamp: float | None) -> np.ndarray:
         return self._get_recent_cmd_with_timeout(vel, stamp, self.cmd_timeout)
 
-    def get_top_left_cmd_vel(self) -> np.ndarray:
-        return self._get_recent_cmd(self.latest_top_left_cmd_vel, self.latest_top_left_cmd_time)
+    def get_leader_left_cmd_vel(self) -> np.ndarray:
+        return self._get_recent_cmd(self.latest_leader_left_cmd_vel, self.latest_leader_left_cmd_time)
 
-    def get_top_right_cmd_vel(self) -> np.ndarray:
-        return self._get_recent_cmd(self.latest_top_right_cmd_vel, self.latest_top_right_cmd_time)
+    def get_leader_right_cmd_vel(self) -> np.ndarray:
+        return self._get_recent_cmd(self.latest_leader_right_cmd_vel, self.latest_leader_right_cmd_time)
 
-    def get_bottom_cbf_cmd_vels(self) -> tuple[bool, np.ndarray]:
+    def get_follower_cbf_cmd_vels(self) -> tuple[bool, np.ndarray]:
         now = time.monotonic()
         left_fresh = (
-            self.latest_bottom_left_cbf_time is not None
-            and now - self.latest_bottom_left_cbf_time <= self.cbf_cmd_timeout
+            self.latest_follower_left_cbf_time is not None
+            and now - self.latest_follower_left_cbf_time <= self.cbf_cmd_timeout
         )
         right_fresh = (
-            self.latest_bottom_right_cbf_time is not None
-            and now - self.latest_bottom_right_cbf_time <= self.cbf_cmd_timeout
+            self.latest_follower_right_cbf_time is not None
+            and now - self.latest_follower_right_cbf_time <= self.cbf_cmd_timeout
         )
         if not (left_fresh and right_fresh):
             return False, np.zeros((2, 3), dtype=np.float32)
 
         safe_vels = np.array(
             [
-                self.latest_bottom_left_cbf_vel,
-                self.latest_bottom_right_cbf_vel,
+                self.latest_follower_left_cbf_vel,
+                self.latest_follower_right_cbf_vel,
             ],
             dtype=np.float32,
             copy=True,
@@ -399,6 +424,10 @@ class FabricRosIo:
         msg.twist.linear.z = float(vel_xyz[2])
         return msg
 
+    def _publish_to_all(self, pubs: list, vel_xyz: np.ndarray) -> None:
+        for pub in pubs:
+            pub.publish(self._make_twist(vel_xyz))
+
     def publish_robot_velocity_commands(
         self,
         left_vel_xyz: np.ndarray,
@@ -407,21 +436,21 @@ class FabricRosIo:
         self.pub_left_robot_cmd.publish(self._make_twist(left_vel_xyz))
         self.pub_right_robot_cmd.publish(self._make_twist(right_vel_xyz))
 
-    def publish_top_cbf_input_velocity_commands(
+    def publish_leader_cbf_input_velocity_commands(
         self,
-        top_left_vel_xyz: np.ndarray,
-        top_right_vel_xyz: np.ndarray,
+        leader_left_vel_xyz: np.ndarray,
+        leader_right_vel_xyz: np.ndarray,
     ) -> None:
-        self.pub_top_left_cbf_input_cmd.publish(self._make_twist(top_left_vel_xyz))
-        self.pub_top_right_cbf_input_cmd.publish(self._make_twist(top_right_vel_xyz))
+        self._publish_to_all(self.pub_leader_left_cbf_input_cmds, leader_left_vel_xyz)
+        self._publish_to_all(self.pub_leader_right_cbf_input_cmds, leader_right_vel_xyz)
 
-    def publish_bottom_applied_velocity_commands(
+    def publish_follower_applied_velocity_commands(
         self,
         left_vel_xyz: np.ndarray,
         right_vel_xyz: np.ndarray,
     ) -> None:
-        self.pub_bottom_left_applied_cmd.publish(self._make_twist(left_vel_xyz))
-        self.pub_bottom_right_applied_cmd.publish(self._make_twist(right_vel_xyz))
+        self._publish_to_all(self.pub_follower_left_applied_cmds, left_vel_xyz)
+        self._publish_to_all(self.pub_follower_right_applied_cmds, right_vel_xyz)
 
     def _make_pose_array(self, positions: np.ndarray) -> PoseArray:
         msg = PoseArray()
@@ -484,6 +513,11 @@ class FabricRosIo:
         ]
         self.pub_sim_timing.publish(msg)
 
+    def publish_sim_perf(self, *, sim_step_ms: float, sim_fps: float) -> None:
+        msg = Float32MultiArray()
+        msg.data = [float(sim_step_ms), float(sim_fps)]
+        self.pub_sim_perf.publish(msg)
+
     def shutdown(self) -> None:
         try:
             self.node.destroy_node()
@@ -513,22 +547,23 @@ class Style3DIsaacStandalone:
         self.cell_y = args.cell_y
         self.cloth_width = self.grid_cells_x * self.cell_x
         self.cloth_height = self.grid_cells_y * self.cell_y
-        self.cloth_center_x = float(args.cloth_center_x)
-        self.cloth_center_y = float(args.cloth_center_y)
+        self.cloth_center_x = float(args.cloth_start_x if args.cloth_start_x is not None else args.cloth_center_x)
+        self.cloth_center_y = float(args.cloth_start_y if args.cloth_start_y is not None else args.cloth_center_y)
         self.cloth_particle_radius = args.particle_radius
         self.cloth_start_z = args.cloth_start_z
 
         self.table_half_extents = np.array([args.table_hx, args.table_hy, args.table_hz], dtype=np.float32)
         self.table_center = wp.vec3(0.0, 0.0, float(args.table_hz))
 
-        self.corner_names = ("bottom_left", "bottom_right", "top_left", "top_right")
-        self.fixed_corner_names = ("top_left", "top_right")
-        self.moving_corner_names = ("bottom_left", "bottom_right")
-        self.bottom_command_max_speed = float(args.bottom_command_max_speed)
+        self.corner_names = ("follower_left", "follower_right", "leader_left", "leader_right")
+        self.fixed_corner_names = ("leader_left", "leader_right")
+        self.moving_corner_names = ("follower_left", "follower_right")
+        self.follower_command_max_speed = float(args.follower_command_max_speed)
+        self.follower_start_y_offset = float(args.follower_start_y_offset)
         self.use_cuda_graph = not bool(args.disable_cuda_graph)
         self.external_cbf_enabled = bool(args.external_cbf_enabled)
         self.cbf_stale_policy = str(args.cbf_stale_policy)
-        self.last_applied_bottom_vels = np.zeros((2, 3), dtype=np.float32)
+        self.last_applied_follower_vels = np.zeros((2, 3), dtype=np.float32)
 
         self.stage = set_stage()
         create_visual_ground(self.stage)
@@ -649,12 +684,20 @@ class Style3DIsaacStandalone:
         self.initial_corner_positions = self.state_0.particle_q.numpy()[self.corner_indices].astype(np.float32, copy=True)
         self._cached_cloth_particles = self._read_cloth_particles_from_state()
         self.corner_target_positions = np.array(self.initial_corner_positions, copy=True)
+        self._apply_initial_follower_target_offset()
         self.corner_target_velocities = np.zeros((4, 3), dtype=np.float32)
 
         self.corner_targets_wp = wp.array(self.corner_target_positions, dtype=wp.vec3, device=self.device)
         self.gripper_flat_indices_wp = wp.array(self.gripper_flat_indices, dtype=int, device=self.device)
         self.gripper_flat_corner_ids_wp = wp.array(self.gripper_flat_corner_ids, dtype=int, device=self.device)
         self.gripper_flat_offsets_wp = wp.array(self.gripper_flat_offsets, dtype=wp.vec3, device=self.device)
+
+    def _apply_initial_follower_target_offset(self) -> None:
+        """Move follower targets toward leaders before the automated run starts."""
+        if abs(self.follower_start_y_offset) <= 0.0:
+            return
+        self.corner_target_positions[IDX_FOLLOWER_LEFT, 1] += self.follower_start_y_offset
+        self.corner_target_positions[IDX_FOLLOWER_RIGHT, 1] += self.follower_start_y_offset
 
     def _compute_gripper_patches(
         self,
@@ -683,22 +726,22 @@ class Style3DIsaacStandalone:
         reach_y = (gripper_size - 1) * self.cell_y + eps_y
 
         corner_defs = {
-            "bottom_left":  (
+            "follower_left":  (
                 np.array([min_x, min_y]),
                 lambda px: px[:, 0] <= min_x + reach_x,
                 lambda py: py[:, 1] <= min_y + reach_y,
             ),
-            "bottom_right": (
+            "follower_right": (
                 np.array([max_x, min_y]),
                 lambda px: px[:, 0] >= max_x - reach_x,
                 lambda py: py[:, 1] <= min_y + reach_y,
             ),
-            "top_left": (
+            "leader_left": (
                 np.array([min_x, max_y]),
                 lambda px: px[:, 0] <= min_x + reach_x,
                 lambda py: py[:, 1] >= max_y - reach_y,
             ),
-            "top_right": (
+            "leader_right": (
                 np.array([max_x, max_y]),
                 lambda px: px[:, 0] >= max_x - reach_x,
                 lambda py: py[:, 1] >= max_y - reach_y,
@@ -780,14 +823,20 @@ class Style3DIsaacStandalone:
         print(f"State publish: every {self.state_publish_every} frame(s)")
         print(
             "ROS2 velocity control: "
-            "/fabric/top_left/cmd_vel, /fabric/top_right/cmd_vel -> integrated top targets; "
-            "top CBF input topics, bottom applied command topics, and robot ee_cmd_vel publishers"
+            "leader command topics (/fabric/leader_left/cmd_vel, /fabric/leader_right/cmd_vel) "
+            "-> integrated leader targets; leader CBF input topics, follower applied "
+            "command topics, and robot ee_cmd_vel publishers; legacy top/bottom aliases enabled"
         )
         print(
-            "Bottom command limiting: "
-            f"max_speed={self.bottom_command_max_speed:.3f} m/s "
-            f"({'disabled' if self.bottom_command_max_speed <= 0.0 else 'enabled'}), "
+            "Follower command limiting: "
+            f"max_speed={self.follower_command_max_speed:.3f} m/s "
+            f"({'disabled' if self.follower_command_max_speed <= 0.0 else 'enabled'}), "
             "publishing fabric state on /fabric/sim/state"
+        )
+        print(
+            "Initial follower target offset: "
+            f"dy={self.follower_start_y_offset:.3f} m "
+            "(positive moves followers toward the leaders at startup)"
         )
         print(
             "External CBF interface: "
@@ -796,21 +845,21 @@ class Style3DIsaacStandalone:
             f"stale_policy={self.cbf_stale_policy}"
         )
         print(
-            "External CBF input topics: "
-            "/fabric/top_left/cbf_input_cmd_vel, /fabric/top_right/cbf_input_cmd_vel"
+            "External CBF leader input topics: "
+            "/fabric/leader_left/cbf_input_cmd_vel, /fabric/leader_right/cbf_input_cmd_vel"
         )
         print(
-            "External CBF output topics: "
-            "/fabric/bottom_left/cbf_cmd_vel, /fabric/bottom_right/cbf_cmd_vel"
+            "External CBF follower output topics: "
+            "/fabric/follower_left/cbf_cmd_vel, /fabric/follower_right/cbf_cmd_vel"
         )
         print(
-            "Bottom applied command topics: "
-            "/fabric/bottom_left/applied_cmd_vel, /fabric/bottom_right/applied_cmd_vel"
+            "Follower applied command topics: "
+            "/fabric/follower_left/applied_cmd_vel, /fabric/follower_right/applied_cmd_vel"
         )
 
         total_pinned = sum(self.gripper_patch_sizes)
         print(
-            f"Gripper patches: {self.args.gripper_size}x{self.args.gripper_size} per corner "
+            f"Gripper patches: {self.args.gripper_size}x{self.args.gripper_size} per leader/follower corner "
             f"({total_pinned} particles pinned total)"
         )
 
@@ -854,7 +903,7 @@ class Style3DIsaacStandalone:
             target_sphere.CreateRadiusAttr(0.02)
             target_sphere.CreateDisplayColorPrimvar("constant").Set([Gf.Vec3f(*target_colors[i])])
             target_xf = UsdGeom.Xformable(target_sphere.GetPrim())
-            p = self.initial_corner_positions[i]
+            p = self.corner_target_positions[i]
             target_xf.AddTranslateOp().Set(Gf.Vec3d(float(p[0]), float(p[1]), float(p[2])))
             self.target_corner_markers.append(target_xf)
 
@@ -863,7 +912,10 @@ class Style3DIsaacStandalone:
             actual_sphere.CreateRadiusAttr(0.014)
             actual_sphere.CreateDisplayColorPrimvar("constant").Set([Gf.Vec3f(*actual_colors[i])])
             actual_xf = UsdGeom.Xformable(actual_sphere.GetPrim())
-            actual_xf.AddTranslateOp().Set(Gf.Vec3d(float(p[0]), float(p[1]), float(p[2])))
+            actual_p = self.initial_corner_positions[i]
+            actual_xf.AddTranslateOp().Set(
+                Gf.Vec3d(float(actual_p[0]), float(actual_p[1]), float(actual_p[2]))
+            )
             self.actual_corner_markers.append(actual_xf)
 
     def _get_actual_corner_positions(self) -> np.ndarray:
@@ -919,19 +971,19 @@ class Style3DIsaacStandalone:
 
             self.state_0, self.state_1 = self.state_1, self.state_0
 
-    def _get_top_corner_velocity_commands(self) -> np.ndarray:
-        """Read ROS2 top-corner velocity commands.
+    def _get_leader_velocity_commands(self) -> np.ndarray:
+        """Read ROS2 leader velocity commands.
 
-        Returns shape (2, 3): [top_left_velocity, top_right_velocity].
+        Returns shape (2, 3): [leader_left_velocity, leader_right_velocity].
         Commands are velocities in m/s; they are never interpreted as positions.
         """
         if self.ros is None:
             return np.zeros((2, 3), dtype=np.float32)
 
-        top_cmd_vels = np.zeros((2, 3), dtype=np.float32)
-        top_cmd_vels[0] = self.ros.get_top_left_cmd_vel()
-        top_cmd_vels[1] = self.ros.get_top_right_cmd_vel()
-        return top_cmd_vels
+        leader_cmd_vels = np.zeros((2, 3), dtype=np.float32)
+        leader_cmd_vels[0] = self.ros.get_leader_left_cmd_vel()
+        leader_cmd_vels[1] = self.ros.get_leader_right_cmd_vel()
+        return leader_cmd_vels
 
     def _limit_velocity_norms(self, velocities: np.ndarray, max_speed: float) -> np.ndarray:
         if max_speed <= 0.0:
@@ -944,44 +996,44 @@ class Style3DIsaacStandalone:
                 limited[i] *= max_speed / norm
         return limited
 
-    def _compute_bottom_applied_velocities(
+    def _compute_follower_applied_velocities(
         self,
-        top_cmd_vels: np.ndarray,
+        leader_cmd_vels: np.ndarray,
     ) -> np.ndarray:
-        nominal = np.asarray(top_cmd_vels, dtype=np.float32).reshape(2, 3).copy()
+        nominal = np.asarray(leader_cmd_vels, dtype=np.float32).reshape(2, 3).copy()
         if not self.external_cbf_enabled:
             applied = nominal
         elif self.ros is not None:
-            ok, safe_vels = self.ros.get_bottom_cbf_cmd_vels()
+            ok, safe_vels = self.ros.get_follower_cbf_cmd_vels()
             if ok:
                 applied = np.asarray(safe_vels, dtype=np.float32).reshape(2, 3)
             else:
-                applied = self._stale_bottom_velocity_fallback(nominal)
+                applied = self._stale_follower_velocity_fallback(nominal)
         else:
-            applied = self._stale_bottom_velocity_fallback(nominal)
+            applied = self._stale_follower_velocity_fallback(nominal)
 
         applied = np.asarray(applied, dtype=np.float32).reshape(2, 3).copy()
-        applied = self._limit_velocity_norms(applied, self.bottom_command_max_speed)
-        self.last_applied_bottom_vels = applied.copy()
+        applied = self._limit_velocity_norms(applied, self.follower_command_max_speed)
+        self.last_applied_follower_vels = applied.copy()
         return applied
 
-    def _stale_bottom_velocity_fallback(self, nominal: np.ndarray) -> np.ndarray:
+    def _stale_follower_velocity_fallback(self, nominal: np.ndarray) -> np.ndarray:
         if self.cbf_stale_policy == "zero":
             return np.zeros_like(nominal)
         if self.cbf_stale_policy == "hold-last":
-            return self.last_applied_bottom_vels
+            return self.last_applied_follower_vels
         return nominal
 
     def _assemble_corner_target_velocities(
         self,
-        top_cmd_vels: np.ndarray,
-        bottom_applied_vels: np.ndarray,
+        leader_cmd_vels: np.ndarray,
+        follower_applied_vels: np.ndarray,
     ) -> np.ndarray:
         vels = np.zeros((4, 3), dtype=np.float32)
-        vels[IDX_BOTTOM_LEFT] = bottom_applied_vels[0]
-        vels[IDX_BOTTOM_RIGHT] = bottom_applied_vels[1]
-        vels[IDX_TOP_LEFT] = top_cmd_vels[0]
-        vels[IDX_TOP_RIGHT] = top_cmd_vels[1]
+        vels[IDX_FOLLOWER_LEFT] = follower_applied_vels[0]
+        vels[IDX_FOLLOWER_RIGHT] = follower_applied_vels[1]
+        vels[IDX_LEADER_LEFT] = leader_cmd_vels[0]
+        vels[IDX_LEADER_RIGHT] = leader_cmd_vels[1]
         return vels
 
     def _integrate_corner_targets(self) -> None:
@@ -995,26 +1047,26 @@ class Style3DIsaacStandalone:
         frame_started = time.perf_counter()
         self.ros.spin_once()
 
-        top_cmd_vels = self._get_top_corner_velocity_commands()
-        self.ros.publish_top_cbf_input_velocity_commands(
-            top_left_vel_xyz=top_cmd_vels[0],
-            top_right_vel_xyz=top_cmd_vels[1],
+        leader_cmd_vels = self._get_leader_velocity_commands()
+        self.ros.publish_leader_cbf_input_velocity_commands(
+            leader_left_vel_xyz=leader_cmd_vels[0],
+            leader_right_vel_xyz=leader_cmd_vels[1],
         )
 
-        bottom_applied_vels = self._compute_bottom_applied_velocities(top_cmd_vels)
-        self.ros.publish_bottom_applied_velocity_commands(
-            left_vel_xyz=bottom_applied_vels[0],
-            right_vel_xyz=bottom_applied_vels[1],
+        follower_applied_vels = self._compute_follower_applied_velocities(leader_cmd_vels)
+        self.ros.publish_follower_applied_velocity_commands(
+            left_vel_xyz=follower_applied_vels[0],
+            right_vel_xyz=follower_applied_vels[1],
         )
 
         self.ros.publish_robot_velocity_commands(
-            left_vel_xyz=bottom_applied_vels[0],
-            right_vel_xyz=bottom_applied_vels[1],
+            left_vel_xyz=follower_applied_vels[0],
+            right_vel_xyz=follower_applied_vels[1],
         )
 
         self.corner_target_velocities = self._assemble_corner_target_velocities(
-            top_cmd_vels,
-            bottom_applied_vels,
+            leader_cmd_vels,
+            follower_applied_vels,
         )
         self._integrate_corner_targets()
 
@@ -1034,6 +1086,8 @@ class Style3DIsaacStandalone:
             frame_time_ms=frame_time_ms,
             frame_dt_sec=self.frame_dt,
         )
+        sim_fps = 1000.0 / frame_time_ms if frame_time_ms > 0.0 else 0.0
+        self.ros.publish_sim_perf(sim_step_ms=frame_time_ms, sim_fps=sim_fps)
         self._frame_index += 1
 
     def test_final(self) -> None:
@@ -1098,6 +1152,18 @@ def parse_args():
         default=0.0,
         help="Initial cloth center Y position in meters.",
     )
+    parser.add_argument(
+        "--cloth-start-x",
+        type=float,
+        default=None,
+        help="Override cloth center X position (alias for --cloth-center-x).",
+    )
+    parser.add_argument(
+        "--cloth-start-y",
+        type=float,
+        default=None,
+        help="Override cloth center Y position (alias for --cloth-center-y).",
+    )
     parser.add_argument("--cloth-start-z", type=float, default=0.72, help="Initial cloth height in meters.")
     parser.add_argument("--mass-per-particle", type=float, default=0.003, help="Style3D mass per particle.")
     parser.add_argument("--particle-radius", type=float, default=0.008, help="Cloth particle radius in meters.")
@@ -1149,13 +1215,24 @@ def parse_args():
         "--cmd-timeout",
         type=float,
         default=1.0,
-        help="Seconds before stale top-corner velocity commands are treated as zero.",
+        help="Seconds before stale leader velocity commands are treated as zero.",
     )
     parser.add_argument(
         "--bottom-command-max-speed",
+        "--follower-command-max-speed",
+        dest="follower_command_max_speed",
         type=float,
         default=0.0,
-        help="Maximum applied bottom-corner command speed in m/s; <= 0 disables limiting.",
+        help="Maximum applied follower command speed in m/s; <= 0 disables limiting.",
+    )
+    parser.add_argument(
+        "--follower-start-y-offset",
+        type=float,
+        default=0.0,
+        help=(
+            "Initial y offset applied to follower gripper targets before motion starts. "
+            "Positive values move followers toward the leaders."
+        ),
     )
     parser.add_argument(
         "--disable-cuda-graph",
@@ -1166,7 +1243,7 @@ def parse_args():
         "--external-cbf-enabled",
         action="store_true",
         default=False,
-        help="Use externally supplied safe bottom-corner CBF velocity commands when fresh.",
+        help="Use externally supplied safe follower CBF velocity commands when fresh.",
     )
     parser.add_argument(
         "--cbf-command-timeout",

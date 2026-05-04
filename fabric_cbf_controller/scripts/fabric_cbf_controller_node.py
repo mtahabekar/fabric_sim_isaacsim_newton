@@ -29,16 +29,16 @@ class ProjectionResult:
 
 
 class FabricCbfControllerNode(Node):
-    """External CBF velocity filter for the two bottom fabric corners."""
+    """External CBF velocity filter for the two follower fabric corners."""
 
     def __init__(self) -> None:
         super().__init__("fabric_cbf_controller_node")
         self._declare_parameters()
 
-        self._top_left_input = np.zeros(3, dtype=np.float64)
-        self._top_right_input = np.zeros(3, dtype=np.float64)
-        self._top_left_input_time: float | None = None
-        self._top_right_input_time: float | None = None
+        self._leader_left_input = np.zeros(3, dtype=np.float64)
+        self._leader_right_input = np.zeros(3, dtype=np.float64)
+        self._leader_left_input_time: float | None = None
+        self._leader_right_input_time: float | None = None
 
         self._distance_msg: ObstacleDistance | None = None
         self._distance_time: float | None = None
@@ -48,8 +48,8 @@ class FabricCbfControllerNode(Node):
         self._last_safe_velocity = np.zeros((2, 3), dtype=np.float64)
         self._last_debug_log_time = 0.0
         self._formation_reference_ready = False
-        self._initial_bottom_left_offset = np.zeros(3, dtype=np.float64)
-        self._initial_bottom_right_offset = np.zeros(3, dtype=np.float64)
+        self._initial_follower_left_offset = np.zeros(3, dtype=np.float64)
+        self._initial_follower_right_offset = np.zeros(3, dtype=np.float64)
         self._last_formation_error = np.zeros((2, 3), dtype=np.float64)
         self._last_recovery_velocity = np.zeros((2, 3), dtype=np.float64)
         self._warned_unsupported_formation_reference_mode = False
@@ -57,7 +57,8 @@ class FabricCbfControllerNode(Node):
         self._prev_corners_positions: dict[str, np.ndarray] = {}
         self._prev_corners_time: float | None = None
         self._corner_velocity_estimates: dict[str, np.ndarray] = {
-            name: np.zeros(3, dtype=np.float64) for name in ("BL", "BR", "TL", "TR")
+            name: np.zeros(3, dtype=np.float64)
+            for name in ("follower_left", "follower_right", "leader_left", "leader_right")
         }
         self._stretch_barrier_values: dict[str, dict] = {}
 
@@ -67,12 +68,12 @@ class FabricCbfControllerNode(Node):
         self._timer = self.create_timer(1.0 / control_rate_hz, self._control_timer_callback)
 
         self.get_logger().info(
-            "Fabric CBF controller ready: %s, %s -> %s, %s"
+            "Fabric CBF controller ready: leader inputs %s, %s -> follower outputs %s, %s"
             % (
-                self._str_param("top_left_cbf_input_topic", "/fabric/top_left/cbf_input_cmd_vel"),
-                self._str_param("top_right_cbf_input_topic", "/fabric/top_right/cbf_input_cmd_vel"),
-                self._str_param("bottom_left_cbf_topic", "/fabric/bottom_left/cbf_cmd_vel"),
-                self._str_param("bottom_right_cbf_topic", "/fabric/bottom_right/cbf_cmd_vel"),
+                self._leader_left_input_topic,
+                self._leader_right_input_topic,
+                self._follower_left_cbf_topic,
+                self._follower_right_cbf_topic,
             )
         )
 
@@ -81,12 +82,16 @@ class FabricCbfControllerNode(Node):
             "enabled": True,
             "control_rate_hz": 60.0,
             "frame_id": "world",
-            "top_left_cbf_input_topic": "/fabric/top_left/cbf_input_cmd_vel",
-            "top_right_cbf_input_topic": "/fabric/top_right/cbf_input_cmd_vel",
+            "leader_left_cbf_input_topic": "",
+            "leader_right_cbf_input_topic": "",
+            "follower_left_cbf_topic": "",
+            "follower_right_cbf_topic": "",
+            "top_left_cbf_input_topic": "",
+            "top_right_cbf_input_topic": "",
             "obstacle_distance_topic": "/fabric/obstacle_distance",
             "fabric_corners_topic": "/fabric/sim/corners",
-            "bottom_left_cbf_topic": "/fabric/bottom_left/cbf_cmd_vel",
-            "bottom_right_cbf_topic": "/fabric/bottom_right/cbf_cmd_vel",
+            "bottom_left_cbf_topic": "",
+            "bottom_right_cbf_topic": "",
             "debug_topic": "/fabric/cbf/debug",
             "input_timeout": 0.25,
             "distance_timeout": 0.25,
@@ -131,16 +136,37 @@ class FabricCbfControllerNode(Node):
             self.declare_parameter(name, default_value)
 
     def _create_ros_interfaces(self) -> None:
-        self._top_left_input_sub = self.create_subscription(
+        self._leader_left_input_topic = self._topic_param(
+            "leader_left_cbf_input_topic",
+            "top_left_cbf_input_topic",
+            "/fabric/leader_left/cbf_input_cmd_vel",
+        )
+        self._leader_right_input_topic = self._topic_param(
+            "leader_right_cbf_input_topic",
+            "top_right_cbf_input_topic",
+            "/fabric/leader_right/cbf_input_cmd_vel",
+        )
+        self._follower_left_cbf_topic = self._topic_param(
+            "follower_left_cbf_topic",
+            "bottom_left_cbf_topic",
+            "/fabric/follower_left/cbf_cmd_vel",
+        )
+        self._follower_right_cbf_topic = self._topic_param(
+            "follower_right_cbf_topic",
+            "bottom_right_cbf_topic",
+            "/fabric/follower_right/cbf_cmd_vel",
+        )
+
+        self._leader_left_input_sub = self.create_subscription(
             TwistStamped,
-            self._str_param("top_left_cbf_input_topic", "/fabric/top_left/cbf_input_cmd_vel"),
-            self._top_left_input_callback,
+            self._leader_left_input_topic,
+            self._leader_left_input_callback,
             10,
         )
-        self._top_right_input_sub = self.create_subscription(
+        self._leader_right_input_sub = self.create_subscription(
             TwistStamped,
-            self._str_param("top_right_cbf_input_topic", "/fabric/top_right/cbf_input_cmd_vel"),
-            self._top_right_input_callback,
+            self._leader_right_input_topic,
+            self._leader_right_input_callback,
             10,
         )
         self._distance_sub = self.create_subscription(
@@ -156,14 +182,14 @@ class FabricCbfControllerNode(Node):
             10,
         )
 
-        self._bottom_left_cbf_pub = self.create_publisher(
+        self._follower_left_cbf_pub = self.create_publisher(
             TwistStamped,
-            self._str_param("bottom_left_cbf_topic", "/fabric/bottom_left/cbf_cmd_vel"),
+            self._follower_left_cbf_topic,
             10,
         )
-        self._bottom_right_cbf_pub = self.create_publisher(
+        self._follower_right_cbf_pub = self.create_publisher(
             TwistStamped,
-            self._str_param("bottom_right_cbf_topic", "/fabric/bottom_right/cbf_cmd_vel"),
+            self._follower_right_cbf_topic,
             10,
         )
         self._debug_pub = self.create_publisher(
@@ -172,13 +198,13 @@ class FabricCbfControllerNode(Node):
             10,
         )
 
-    def _top_left_input_callback(self, msg: TwistStamped) -> None:
-        self._top_left_input = self._twist_linear_to_array(msg)
-        self._top_left_input_time = time.monotonic()
+    def _leader_left_input_callback(self, msg: TwistStamped) -> None:
+        self._leader_left_input = self._twist_linear_to_array(msg)
+        self._leader_left_input_time = time.monotonic()
 
-    def _top_right_input_callback(self, msg: TwistStamped) -> None:
-        self._top_right_input = self._twist_linear_to_array(msg)
-        self._top_right_input_time = time.monotonic()
+    def _leader_right_input_callback(self, msg: TwistStamped) -> None:
+        self._leader_right_input = self._twist_linear_to_array(msg)
+        self._leader_right_input_time = time.monotonic()
 
     def _distance_callback(self, msg: ObstacleDistance) -> None:
         self._distance_msg = msg
@@ -426,7 +452,7 @@ class FabricCbfControllerNode(Node):
         if len(msg.poses) < 4:
             return
         now = time.monotonic()
-        names = ("BL", "BR", "TL", "TR")
+        names = ("follower_left", "follower_right", "leader_left", "leader_right")
         positions: dict[str, np.ndarray] = {}
         for i, name in enumerate(names):
             pos = self._point_to_array(msg.poses[i].position)
@@ -461,13 +487,13 @@ class FabricCbfControllerNode(Node):
         positions = self._formation_corner_positions(corners_msg)
         if positions is None:
             return []
-        bl, br, tl, tr = positions
+        follower_left, follower_right, leader_left, leader_right = positions
 
         alpha_gain = self._float_param("stretch_alpha_gain", 1.0)
-        v_bl = self._corner_velocity_estimates["BL"]
-        v_br = self._corner_velocity_estimates["BR"]
-        v_tl = self._corner_velocity_estimates["TL"]
-        v_tr = self._corner_velocity_estimates["TR"]
+        v_follower_left = self._corner_velocity_estimates["follower_left"]
+        v_follower_right = self._corner_velocity_estimates["follower_right"]
+        v_leader_left = self._corner_velocity_estimates["leader_left"]
+        v_leader_right = self._corner_velocity_estimates["leader_right"]
 
         constraints: list[tuple[np.ndarray, float]] = []
         self._stretch_barrier_values = {}
@@ -500,23 +526,65 @@ class FabricCbfControllerNode(Node):
                 "d_max": d_max,
             }
 
-        # Left vertical edge: i=BL (controllable, slot 0:3), j=TL (passive)
-        _add("BL-TL", bl, tl, self._float_param("d_max_bl_tl", 0.85), v_tl, True)
+        # Left leader-follower edge: i=follower_left (controllable), j=leader_left.
+        _add(
+            "follower_left-leader_left",
+            follower_left,
+            leader_left,
+            self._float_param("d_max_bl_tl", 0.85),
+            v_leader_left,
+            True,
+        )
 
-        # Right vertical edge: i=BR (controllable, slot 3:6), j=TR (passive)
-        _add("BR-TR", br, tr, self._float_param("d_max_br_tr", 0.85), v_tr, False)
+        # Right leader-follower edge: i=follower_right (controllable), j=leader_right.
+        _add(
+            "follower_right-leader_right",
+            follower_right,
+            leader_right,
+            self._float_param("d_max_br_tr", 0.85),
+            v_leader_right,
+            False,
+        )
 
-        # Bottom horizontal edge: both controllable — two constraint rows
+        # Follower horizontal edge: both controllable, so add two constraint rows.
         d_max_blbr = self._float_param("d_max_bl_br", 0.85)
-        _add("BL-BR(BL)", bl, br, d_max_blbr, v_br, True)   # i=BL, j=BR
-        _add("BL-BR(BR)", br, bl, d_max_blbr, v_bl, False)  # i=BR, j=BL
+        _add(
+            "follower_left-follower_right(follower_left)",
+            follower_left,
+            follower_right,
+            d_max_blbr,
+            v_follower_right,
+            True,
+        )
+        _add(
+            "follower_left-follower_right(follower_right)",
+            follower_right,
+            follower_left,
+            d_max_blbr,
+            v_follower_left,
+            False,
+        )
 
         # Optional diagonals
         if self._bool_param("d_max_bl_tr_enabled", False):
-            _add("BL-TR", bl, tr, self._float_param("d_max_bl_tr", 1.2), v_tr, True)
+            _add(
+                "follower_left-leader_right",
+                follower_left,
+                leader_right,
+                self._float_param("d_max_bl_tr", 1.2),
+                v_leader_right,
+                True,
+            )
 
         if self._bool_param("d_max_br_tl_enabled", False):
-            _add("BR-TL", br, tl, self._float_param("d_max_br_tl", 1.2), v_tl, False)
+            _add(
+                "follower_right-leader_left",
+                follower_right,
+                leader_left,
+                self._float_param("d_max_br_tl", 1.2),
+                v_leader_left,
+                False,
+            )
 
         return constraints
 
@@ -670,8 +738,8 @@ class FabricCbfControllerNode(Node):
 
         stamp = self.get_clock().now().to_msg()
         frame_id = self._str_param("frame_id", "world")
-        self._bottom_left_cbf_pub.publish(self._make_twist_stamped(safe[0], stamp, frame_id))
-        self._bottom_right_cbf_pub.publish(self._make_twist_stamped(safe[1], stamp, frame_id))
+        self._follower_left_cbf_pub.publish(self._make_twist_stamped(safe[0], stamp, frame_id))
+        self._follower_right_cbf_pub.publish(self._make_twist_stamped(safe[1], stamp, frame_id))
         return True
 
     def _filter_safe_velocity(self, safe_flat: np.ndarray) -> np.ndarray:
@@ -812,14 +880,14 @@ class FabricCbfControllerNode(Node):
     def _input_is_ready(self, now_monotonic: float) -> bool:
         timeout = self._float_param("input_timeout", 0.25, minimum=0.0)
         left_ready = (
-            self._top_left_input_time is not None
-            and now_monotonic - self._top_left_input_time <= timeout
-            and np.isfinite(self._top_left_input).all()
+            self._leader_left_input_time is not None
+            and now_monotonic - self._leader_left_input_time <= timeout
+            and np.isfinite(self._leader_left_input).all()
         )
         right_ready = (
-            self._top_right_input_time is not None
-            and now_monotonic - self._top_right_input_time <= timeout
-            and np.isfinite(self._top_right_input).all()
+            self._leader_right_input_time is not None
+            and now_monotonic - self._leader_right_input_time <= timeout
+            and np.isfinite(self._leader_right_input).all()
         )
         return bool(left_ready and right_ready)
 
@@ -875,7 +943,7 @@ class FabricCbfControllerNode(Node):
 
     def _current_nominal_velocity(self) -> np.ndarray:
         base = self._finite_vector(
-            np.concatenate((self._top_left_input, self._top_right_input)),
+            np.concatenate((self._leader_left_input, self._leader_right_input)),
             6,
         )
         self._last_formation_error[:] = 0.0
@@ -893,13 +961,13 @@ class FabricCbfControllerNode(Node):
         positions = self._formation_corner_positions(corners_msg)
         if positions is None:
             return base
-        bottom_left, bottom_right, top_left, top_right = positions
+        follower_left, follower_right, leader_left, leader_right = positions
 
-        desired_bottom_left = top_left + self._initial_bottom_left_offset
-        desired_bottom_right = top_right + self._initial_bottom_right_offset
+        desired_follower_left = leader_left + self._initial_follower_left_offset
+        desired_follower_right = leader_right + self._initial_follower_right_offset
         deadband = self._float_param("formation_recovery_deadband", 0.003, minimum=0.0)
-        err_left = self._apply_position_deadband(desired_bottom_left - bottom_left, deadband)
-        err_right = self._apply_position_deadband(desired_bottom_right - bottom_right, deadband)
+        err_left = self._apply_position_deadband(desired_follower_left - follower_left, deadband)
+        err_right = self._apply_position_deadband(desired_follower_right - follower_right, deadband)
 
         gain = self._float_param("formation_recovery_gain", 0.5, minimum=0.0)
         recovery = np.vstack((gain * err_left, gain * err_right))
@@ -920,17 +988,17 @@ class FabricCbfControllerNode(Node):
         positions = self._formation_corner_positions(msg)
         if positions is None:
             return
-        bottom_left, bottom_right, top_left, top_right = positions
+        follower_left, follower_right, leader_left, leader_right = positions
 
-        self._initial_bottom_left_offset = bottom_left - top_left
-        self._initial_bottom_right_offset = bottom_right - top_right
+        self._initial_follower_left_offset = follower_left - leader_left
+        self._initial_follower_right_offset = follower_right - leader_right
         self._formation_reference_ready = True
         self.get_logger().info(
-            "Formation reference captured: bottom-left/top-left offset=%s, "
-            "bottom-right/top-right offset=%s"
+            "Formation reference captured: follower-left/leader-left offset=%s, "
+            "follower-right/leader-right offset=%s"
             % (
-                self._array_str(self._initial_bottom_left_offset),
-                self._array_str(self._initial_bottom_right_offset),
+                self._array_str(self._initial_follower_left_offset),
+                self._array_str(self._initial_follower_right_offset),
             )
         )
 
@@ -1101,6 +1169,12 @@ class FabricCbfControllerNode(Node):
         except Exception:
             return default_value
         return value if value else default_value
+
+    def _topic_param(self, preferred_name: str, legacy_name: str, default_value: str) -> str:
+        preferred = self._str_param(preferred_name, "")
+        if preferred:
+            return preferred
+        return self._str_param(legacy_name, default_value)
 
     def _choice_param(self, name: str, default_value: str, allowed_values: tuple[str, ...]) -> str:
         value = self._str_param(name, default_value)

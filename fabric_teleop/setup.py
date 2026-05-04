@@ -14,7 +14,7 @@ setup(
     zip_safe=True,
     maintainer="taha",
     maintainer_email="mtahabekar@gmail.com",
-    description="Keyboard teleop node for fabric corner velocity commands.",
+    description="Keyboard teleop node for fabric leader velocity commands.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

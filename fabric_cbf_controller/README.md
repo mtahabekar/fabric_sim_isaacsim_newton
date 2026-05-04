@@ -2,34 +2,37 @@
 
 ROS2 Python CBF controller for the IsaacSim fabric manipulation setup.
 
-This package listens to top-corner CBF input velocity commands from IsaacSim,
-adds a slow formation recovery term to produce nominal bottom-corner commands,
+This package listens to leader CBF input velocity commands from IsaacSim,
+adds a slow formation recovery term to produce nominal follower commands,
 filters them through an obstacle-avoidance control barrier function, and
-publishes final bottom-corner velocity commands back to IsaacSim. It also
+publishes final follower velocity commands back to IsaacSim. It also
 publishes a debug message with the active mode, barrier values, approximate
 Jacobian, nominal/safe velocities, and solver status.
 
 ## Architecture
 
+The primary ROS topic strings use the leader/follower naming convention. The
+simulator keeps historical `top_*`/`bottom_*` aliases enabled for compatibility.
+
 - IsaacSim receives teleop commands on:
-  - `/fabric/top_left/cmd_vel`
-  - `/fabric/top_right/cmd_vel`
-- IsaacSim republishes those top velocities as CBF inputs on:
-  - `/fabric/top_left/cbf_input_cmd_vel`
-  - `/fabric/top_right/cbf_input_cmd_vel`
-- The CBF node computes nominal bottom-corner commands from each top input
+  - `/fabric/leader_left/cmd_vel`
+  - `/fabric/leader_right/cmd_vel`
+- IsaacSim republishes those leader velocities as CBF inputs on:
+  - `/fabric/leader_left/cbf_input_cmd_vel`
+  - `/fabric/leader_right/cbf_input_cmd_vel`
+- The CBF node computes nominal follower commands from each leader input
   velocity plus a slow formation recovery term:
-  - top-left input + recovery -> desired bottom-left velocity
-  - top-right input + recovery -> desired bottom-right velocity
+  - leader-left input + recovery -> desired follower-left velocity
+  - leader-right input + recovery -> desired follower-right velocity
 - IsaacSim publishes fabric corner poses on `/fabric/sim/corners`.
 - `fabric_obstacle_distance` publishes obstacle distance information on
   `/fabric/obstacle_distance`.
-- `fabric_cbf_controller` publishes final bottom-corner commands on:
-  - `/fabric/bottom_left/cbf_cmd_vel`
-  - `/fabric/bottom_right/cbf_cmd_vel`
+- `fabric_cbf_controller` publishes final follower commands on:
+  - `/fabric/follower_left/cbf_cmd_vel`
+  - `/fabric/follower_right/cbf_cmd_vel`
 - Debug output is published on `/fabric/cbf/debug`.
 
-The formation recovery term tries to restore the initial bottom-to-top offsets
+The formation recovery term tries to restore the initial follower-to-leader offsets
 captured from the first valid `/fabric/sim/corners` message. When the CBF is
 inactive or the barrier is already satisfied, the controller publishes the
 recovered nominal velocity. When the CBF is active, it modifies that recovered
@@ -42,7 +45,7 @@ J = [w_left * n, w_right * n]
 ```
 
 where `n` is the obstacle-to-fabric normal and `w_left`, `w_right` approximate
-how much each bottom corner influences the closest particle. This is modular so
+how much each follower influences the closest particle. This is modular so
 a future finite-difference or rollout-based estimator can replace it without
 changing the rest of the controller.
 
@@ -86,7 +89,7 @@ python3 standalone_controller_codex.py --external-cbf-enabled --cbf-stale-policy
 ```
 
 In this architecture, IsaacSim's `--cbf-stale-policy nominal` means "use the
-top velocities directly for the bottom corners if CBF output is stale."
+leader velocities directly for the followers if CBF output is stale."
 
 ## Stretch Avoidance
 
@@ -108,23 +111,24 @@ it is already overstretched.
 | `stretch_enabled` | bool | `True` | Enable all stretch constraints |
 | `stretch_alpha_gain` | float | `1.0` | Class-K gain α(h) = gain × h |
 | `stretch_velocity_filter_beta` | float | `0.8` | Low-pass filter for corner velocity estimates (0 = no filter, 0.99 = heavy) |
-| `d_max_bl_tl` | float | `0.85` m | Max allowed distance BL↔TL (left vertical edge) |
-| `d_max_br_tr` | float | `0.85` m | Max allowed distance BR↔TR (right vertical edge) |
-| `d_max_bl_br` | float | `0.85` m | Max allowed distance BL↔BR (bottom horizontal edge) |
-| `d_max_bl_tr_enabled` | bool | `False` | Enable left-to-right diagonal constraint BL↔TR |
-| `d_max_bl_tr` | float | `1.2` m | Max allowed distance BL↔TR (diagonal) |
-| `d_max_br_tl_enabled` | bool | `False` | Enable right-to-left diagonal constraint BR↔TL |
-| `d_max_br_tl` | float | `1.2` m | Max allowed distance BR↔TL (diagonal) |
+| `d_max_bl_tl` | float | `0.85` m | Max allowed distance follower-left↔leader-left. Parameter name is legacy. |
+| `d_max_br_tr` | float | `0.85` m | Max allowed distance follower-right↔leader-right. Parameter name is legacy. |
+| `d_max_bl_br` | float | `0.85` m | Max allowed distance follower-left↔follower-right. Parameter name is legacy. |
+| `d_max_bl_tr_enabled` | bool | `False` | Enable follower-left↔leader-right diagonal. Parameter name is legacy. |
+| `d_max_bl_tr` | float | `1.2` m | Max allowed distance follower-left↔leader-right. Parameter name is legacy. |
+| `d_max_br_tl_enabled` | bool | `False` | Enable follower-right↔leader-left diagonal. Parameter name is legacy. |
+| `d_max_br_tl` | float | `1.2` m | Max allowed distance follower-right↔leader-left. Parameter name is legacy. |
 
 ### Corner topology
 
 Corner indices on `/fabric/sim/corners` (PoseArray):
-- `[0]` = bottom-left (BL) — controllable
-- `[1]` = bottom-right (BR) — controllable
-- `[2]` = top-left (TL) — passive (velocity estimated)
-- `[3]` = top-right (TR) — passive (velocity estimated)
+- `[0]` = follower-left — controllable
+- `[1]` = follower-right — controllable
+- `[2]` = leader-left — passive (velocity estimated)
+- `[3]` = leader-right — passive (velocity estimated)
 
-Active pairs by default: BL↔TL, BR↔TR, BL↔BR (two rows).
+Active pairs by default: follower-left↔leader-left,
+follower-right↔leader-right, follower-left↔follower-right (two rows).
 
 ### Enable/disable pairs at runtime
 
@@ -141,10 +145,10 @@ ros2 param set /fabric_cbf_controller_node d_max_bl_tl 0.90
 
 ### Expected behavior
 
-When the top corners are pulled far apart (TL and TR moving away from BL/BR),
-the stretch constraints resist and eventually prevent the bottom corners from
+When the leaders are pulled far apart, the stretch constraints resist and
+eventually prevent the followers from
 following. When a pair is overstretched (h < 0) the RHS becomes positive,
-forcing the bottom corners to converge toward the limit.
+forcing the followers to converge toward the limit.
 
 ### Monitoring
 
@@ -168,7 +172,7 @@ python3 -m pytest fabric_cbf_controller/test/test_stretch_cbf.py -v
 ## Notes
 
 The controller filters both obstacle-avoidance and stretch-avoidance CBF
-constraints for bottom-left and bottom-right velocity commands. When both are
+constraints for follower-left and follower-right velocity commands. When both are
 active simultaneously the combined QP is solved via iterative weighted
 half-plane projection. It does not run internal IsaacSim rollouts and does not
 implement proximity CBFs.

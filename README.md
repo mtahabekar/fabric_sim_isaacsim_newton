@@ -3,20 +3,20 @@
 This repository contains a ROS 2 + Isaac Sim fabric manipulation stack. It runs
 a Newton Style3D cloth simulation in Isaac Sim, publishes the simulated fabric
 state over ROS 2, computes distance from the fabric to a table obstacle, and
-uses an external control barrier function (CBF) node to filter bottom-corner
+uses an external control barrier function (CBF) node to filter follower
 velocity commands before they are applied back in the simulator.
 
 The main workflow is:
 
 ```text
 keyboard teleop
-  -> top-corner velocity commands
+  -> leader velocity commands
   -> Isaac Sim / Newton cloth simulation
   -> simulated fabric state and corner poses
   -> obstacle distance node
   -> CBF controller
-  -> safe bottom-corner velocity commands
-  -> Isaac Sim applies top and bottom corner commands
+  -> safe follower velocity commands
+  -> Isaac Sim applies leader and follower commands
 ```
 
 ## Repository Layout
@@ -26,7 +26,7 @@ keyboard teleop
 | `fabric_newton_isaacsim_standalone.py` | Standalone Isaac Sim application. Builds the cloth, table, gripper patches, Newton solver, USD visuals, and ROS 2 bridge. |
 | `fabric_sim_bringup/` | Launch package for starting the full stack from one configuration file. |
 | `fabric_sim_bringup/config/full_sim.yaml` | Central configuration for launch flags, simulator CLI arguments, node startup delays, and ROS 2 node parameters. |
-| `fabric_teleop/` | Keyboard teleop package that publishes top-left and top-right fabric corner velocity commands. |
+| `fabric_teleop/` | Keyboard teleop package that publishes leader-left and leader-right fabric velocity commands. |
 | `fabric_obstacle_distance/` | ROS 2 node and message for signed distance from fabric particles to the table obstacle. |
 | `fabric_cbf_controller/` | ROS 2 node and debug message for the external CBF velocity filter. |
 
@@ -44,15 +44,15 @@ keyboard teleop
   and solver iterations;
 - selects square gripper patches around the four cloth corners and hard-pins
   those particles to moving corner targets;
-- subscribes to top-corner teleop commands on `/fabric/top_left/cmd_vel` and
-  `/fabric/top_right/cmd_vel`;
-- republishes those top commands as CBF inputs on
-  `/fabric/top_left/cbf_input_cmd_vel` and
-  `/fabric/top_right/cbf_input_cmd_vel`;
-- optionally subscribes to external CBF bottom-corner commands on
-  `/fabric/bottom_left/cbf_cmd_vel` and `/fabric/bottom_right/cbf_cmd_vel`;
-- applies the top commands directly to the top gripper targets and applies
-  either CBF-safe, nominal, zero, or held bottom commands depending on the CBF
+- subscribes to leader teleop commands on `/fabric/leader_left/cmd_vel` and
+  `/fabric/leader_right/cmd_vel`;
+- republishes those leader commands as CBF inputs on
+  `/fabric/leader_left/cbf_input_cmd_vel` and
+  `/fabric/leader_right/cbf_input_cmd_vel`;
+- optionally subscribes to external CBF follower commands on
+  `/fabric/follower_left/cbf_cmd_vel` and `/fabric/follower_right/cbf_cmd_vel`;
+- applies the leader commands directly to the leader gripper targets and applies
+  either CBF-safe, nominal, zero, or held follower commands depending on the CBF
   settings and command freshness;
 - publishes simulated corner poses on `/fabric/sim/corners` and fabric particle
   positions on `/fabric/sim/state`;
@@ -93,18 +93,18 @@ Keys in `isaac_sim.arguments` map from snake case to CLI flags. For example,
 ### Keyboard Teleop
 
 `fabric_teleop/fabric_teleop/fabric_corner_keyboard_teleop.py` publishes
-`geometry_msgs/msg/TwistStamped` velocity commands for the two top fabric
-corners. It publishes continuously while keys are held and sends zeros when
+`geometry_msgs/msg/TwistStamped` velocity commands for the two fabric leaders.
+It publishes continuously while keys are held and sends zeros when
 keys are released.
 
-| Corner | Keys | Axes |
+| Role | Keys | Axes |
 | --- | --- | --- |
-| Top left | `w` / `s` | `+x` / `-x` |
-| Top left | `d` / `a` | `+y` / `-y` |
-| Top left | `e` / `q` | `+z` / `-z` |
-| Top right | `i` / `k` | `+x` / `-x` |
-| Top right | `l` / `j` | `+y` / `-y` |
-| Top right | `o` / `u` | `+z` / `-z` |
+| Leader left | `w` / `s` | `+x` / `-x` |
+| Leader left | `d` / `a` | `+y` / `-y` |
+| Leader left | `e` / `q` | `+z` / `-z` |
+| Leader right | `i` / `k` | `+x` / `-x` |
+| Leader right | `l` / `j` | `+y` / `-y` |
+| Leader right | `o` / `u` | `+z` / `-z` |
 
 Use `Ctrl+C` to stop the launch. The `q` key is a movement key, not a quit key.
 
@@ -139,22 +139,22 @@ analysis.
 ### CBF Controller
 
 `fabric_cbf_controller/scripts/fabric_cbf_controller_node.py` is the external
-velocity filter for the two bottom fabric corners. It subscribes to:
+velocity filter for the two fabric followers. It subscribes to:
 
-- `/fabric/top_left/cbf_input_cmd_vel`
-- `/fabric/top_right/cbf_input_cmd_vel`
+- `/fabric/leader_left/cbf_input_cmd_vel`
+- `/fabric/leader_right/cbf_input_cmd_vel`
 - `/fabric/obstacle_distance`
 - `/fabric/sim/corners`
 
 It publishes:
 
-- `/fabric/bottom_left/cbf_cmd_vel`
-- `/fabric/bottom_right/cbf_cmd_vel`
+- `/fabric/follower_left/cbf_cmd_vel`
+- `/fabric/follower_right/cbf_cmd_vel`
 - `/fabric/cbf/debug`
 
-The controller first builds a nominal bottom-corner command from the top-corner
+The controller first builds a nominal follower command from the leader
 commands. If formation recovery is enabled, it also tries to preserve the
-initial bottom-to-top corner offsets captured from the first valid
+initial follower-to-leader offsets captured from the first valid
 `/fabric/sim/corners` message.
 
 When the obstacle barrier is active, the controller enforces the CBF constraint:
@@ -165,12 +165,12 @@ J * u >= -alpha(h)
 
 where:
 
-- `u` is the six-dimensional bottom command vector:
-  `[bottom_left_xyz, bottom_right_xyz]`;
+- `u` is the six-dimensional follower command vector:
+  `[follower_left_xyz, follower_right_xyz]`;
 - `h` comes from the obstacle distance node;
 - `alpha(h)` is a configurable piecewise-linear gain;
 - `J` is a lightweight geometric Jacobian based on the obstacle normal and
-  estimated left/right corner influence weights.
+  estimated left/right follower influence weights.
 
 If the nominal command already satisfies the constraint, it is passed through
 after speed clipping. If not, the controller projects it to the closest safe
@@ -183,19 +183,23 @@ It also includes `compute_time_ms` for controller timing analysis.
 
 ## ROS 2 Topics
 
+The primary topic names use the leader/follower convention. The simulator also
+keeps historical `top_*` and `bottom_*` aliases enabled for backward
+compatibility.
+
 | Topic | Type | Producer | Consumer |
 | --- | --- | --- | --- |
-| `/fabric/top_left/cmd_vel` | `geometry_msgs/msg/TwistStamped` | teleop | Isaac Sim |
-| `/fabric/top_right/cmd_vel` | `geometry_msgs/msg/TwistStamped` | teleop | Isaac Sim |
-| `/fabric/top_left/cbf_input_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | CBF controller |
-| `/fabric/top_right/cbf_input_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | CBF controller |
+| `/fabric/leader_left/cmd_vel` | `geometry_msgs/msg/TwistStamped` | teleop | Isaac Sim |
+| `/fabric/leader_right/cmd_vel` | `geometry_msgs/msg/TwistStamped` | teleop | Isaac Sim |
+| `/fabric/leader_left/cbf_input_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | CBF controller |
+| `/fabric/leader_right/cbf_input_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | CBF controller |
 | `/fabric/sim/state` | `sensor_msgs/msg/PointCloud2` | Isaac Sim | obstacle distance |
 | `/fabric/sim/corners` | `geometry_msgs/msg/PoseArray` | Isaac Sim | CBF controller |
 | `/fabric/obstacle_distance` | `fabric_obstacle_distance/msg/ObstacleDistance` | obstacle distance | CBF controller |
-| `/fabric/bottom_left/cbf_cmd_vel` | `geometry_msgs/msg/TwistStamped` | CBF controller | Isaac Sim |
-| `/fabric/bottom_right/cbf_cmd_vel` | `geometry_msgs/msg/TwistStamped` | CBF controller | Isaac Sim |
-| `/fabric/bottom_left/applied_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | debugging/monitoring |
-| `/fabric/bottom_right/applied_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | debugging/monitoring |
+| `/fabric/follower_left/cbf_cmd_vel` | `geometry_msgs/msg/TwistStamped` | CBF controller | Isaac Sim |
+| `/fabric/follower_right/cbf_cmd_vel` | `geometry_msgs/msg/TwistStamped` | CBF controller | Isaac Sim |
+| `/fabric/follower_left/applied_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | debugging/monitoring |
+| `/fabric/follower_right/applied_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | debugging/monitoring |
 | `/robot_left/ee_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | downstream robot bridge/debugging |
 | `/robot_right/ee_cmd_vel` | `geometry_msgs/msg/TwistStamped` | Isaac Sim | downstream robot bridge/debugging |
 | `/fabric/cbf/debug` | `fabric_cbf_controller/msg/CbfDebug` | CBF controller | debugging/monitoring |
@@ -261,7 +265,7 @@ After sourcing the workspace, these commands are useful in another terminal:
 ros2 topic list
 ros2 topic echo /fabric/obstacle_distance
 ros2 topic echo /fabric/cbf/debug
-ros2 topic echo /fabric/bottom_left/applied_cmd_vel
+ros2 topic echo /fabric/follower_left/applied_cmd_vel  # follower-left applied command
 ```
 
 The CBF node also has periodic log output controlled by

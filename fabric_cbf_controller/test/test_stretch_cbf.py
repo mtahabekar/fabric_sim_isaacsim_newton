@@ -50,9 +50,9 @@ def stretch_constraint(
 # ---------------------------------------------------------------------------
 
 def test_h_positive_when_safe():
-    bl = np.array([0.0, 0.0, 0.0])
-    tl = np.array([0.0, 0.0, 0.7])   # dist = 0.7, d_max = 0.85
-    h = stretch_h(bl, tl, d_max=0.85)
+    follower_left = np.array([0.0, 0.0, 0.0])
+    leader_left = np.array([0.0, 0.0, 0.7])   # dist = 0.7, d_max = 0.85
+    h = stretch_h(follower_left, leader_left, d_max=0.85)
     assert h > 0.0
     assert math.isclose(h, 0.85 - 0.7, rel_tol=1e-9)
 
@@ -62,9 +62,9 @@ def test_h_positive_when_safe():
 # ---------------------------------------------------------------------------
 
 def test_h_zero_at_boundary():
-    bl = np.array([0.0, 0.0, 0.0])
-    tl = np.array([0.0, 0.0, 0.85])  # dist exactly d_max
-    h = stretch_h(bl, tl, d_max=0.85)
+    follower_left = np.array([0.0, 0.0, 0.0])
+    leader_left = np.array([0.0, 0.0, 0.85])  # dist exactly d_max
+    h = stretch_h(follower_left, leader_left, d_max=0.85)
     assert math.isclose(h, 0.0, abs_tol=1e-12)
 
 
@@ -73,9 +73,9 @@ def test_h_zero_at_boundary():
 # ---------------------------------------------------------------------------
 
 def test_h_negative_when_violated():
-    bl = np.array([0.0, 0.0, 0.0])
-    tl = np.array([0.0, 0.0, 1.0])   # dist = 1.0 > d_max = 0.85
-    h = stretch_h(bl, tl, d_max=0.85)
+    follower_left = np.array([0.0, 0.0, 0.0])
+    leader_left = np.array([0.0, 0.0, 1.0])   # dist = 1.0 > d_max = 0.85
+    h = stretch_h(follower_left, leader_left, d_max=0.85)
     assert h < 0.0
     assert math.isclose(h, 0.85 - 1.0, rel_tol=1e-9)
 
@@ -85,45 +85,53 @@ def test_h_negative_when_violated():
 # ---------------------------------------------------------------------------
 
 def test_row_direction_bl_constraint():
-    """For a BL-TL pair, a_ij should point from BL toward TL (upward)."""
-    bl = np.array([0.0, 0.0, 0.0])
-    tl = np.array([0.0, 0.0, 0.7])
-    v_tl = np.zeros(3)
-    row, _ = stretch_constraint(bl, tl, 0.85, 1.0, v_tl, i_is_bl=True)
+    """For follower-left/leader-left, a_ij points from follower to leader."""
+    follower_left = np.array([0.0, 0.0, 0.0])
+    leader_left = np.array([0.0, 0.0, 0.7])
+    v_leader_left = np.zeros(3)
+    row, _ = stretch_constraint(
+        follower_left, leader_left, 0.85, 1.0, v_leader_left, i_is_bl=True
+    )
     assert row is not None
     a_ij = row[0:3]
     expected = np.array([0.0, 0.0, 1.0])   # unit vector upward
     np.testing.assert_allclose(a_ij, expected, atol=1e-12)
-    # BR half must be zero
+    # follower-right half must be zero
     np.testing.assert_allclose(row[3:6], np.zeros(3), atol=1e-12)
 
 
 def test_row_direction_br_constraint():
-    """For a BR-TR pair, a_ij should point from BR toward TR; row in slot 3:6."""
-    br = np.array([0.0, 0.0, 0.0])
-    tr = np.array([0.0, 0.0, 0.7])
-    v_tr = np.zeros(3)
-    row, _ = stretch_constraint(br, tr, 0.85, 1.0, v_tr, i_is_bl=False)
+    """For follower-right/leader-right, a_ij points from follower to leader."""
+    follower_right = np.array([0.0, 0.0, 0.0])
+    leader_right = np.array([0.0, 0.0, 0.7])
+    v_leader_right = np.zeros(3)
+    row, _ = stretch_constraint(
+        follower_right, leader_right, 0.85, 1.0, v_leader_right, i_is_bl=False
+    )
     assert row is not None
     a_ij = row[3:6]
     expected = np.array([0.0, 0.0, 1.0])
     np.testing.assert_allclose(a_ij, expected, atol=1e-12)
-    # BL half must be zero
+    # follower-left half must be zero
     np.testing.assert_allclose(row[0:3], np.zeros(3), atol=1e-12)
 
 
 def test_bl_br_rows_are_opposite():
-    """BL-BR pair produces two rows with opposite a_ij directions."""
-    bl = np.array([-0.4, 0.0, 0.0])
-    br = np.array([0.4, 0.0, 0.0])
-    v_bl = np.zeros(3)
-    v_br = np.zeros(3)
-    row_bl, _ = stretch_constraint(bl, br, 0.85, 1.0, v_br, i_is_bl=True)
-    row_br, _ = stretch_constraint(br, bl, 0.85, 1.0, v_bl, i_is_bl=False)
-    assert row_bl is not None and row_br is not None
-    # a_BL_BR = +x, a_BR_BL = -x
-    np.testing.assert_allclose(row_bl[0:3], [1.0, 0.0, 0.0], atol=1e-12)
-    np.testing.assert_allclose(row_br[3:6], [-1.0, 0.0, 0.0], atol=1e-12)
+    """Follower-left/follower-right pair produces opposite a_ij directions."""
+    follower_left = np.array([-0.4, 0.0, 0.0])
+    follower_right = np.array([0.4, 0.0, 0.0])
+    v_follower_left = np.zeros(3)
+    v_follower_right = np.zeros(3)
+    row_follower_left, _ = stretch_constraint(
+        follower_left, follower_right, 0.85, 1.0, v_follower_right, i_is_bl=True
+    )
+    row_follower_right, _ = stretch_constraint(
+        follower_right, follower_left, 0.85, 1.0, v_follower_left, i_is_bl=False
+    )
+    assert row_follower_left is not None and row_follower_right is not None
+    # follower-left to follower-right is +x; reverse direction is -x.
+    np.testing.assert_allclose(row_follower_left[0:3], [1.0, 0.0, 0.0], atol=1e-12)
+    np.testing.assert_allclose(row_follower_right[3:6], [-1.0, 0.0, 0.0], atol=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -132,28 +140,34 @@ def test_bl_br_rows_are_opposite():
 
 def test_velocity_compensation_sign():
     """Positive v_j projected onto a_ij increases rhs (tightens constraint)."""
-    bl = np.array([0.0, 0.0, 0.0])
-    tl = np.array([0.0, 0.0, 0.7])   # a_ij = [0,0,1], h = 0.15 > 0
+    follower_left = np.array([0.0, 0.0, 0.0])
+    leader_left = np.array([0.0, 0.0, 0.7])   # a_ij = [0,0,1], h = 0.15 > 0
     alpha_gain = 1.0
-    v_tl_zero = np.zeros(3)
-    v_tl_up = np.array([0.0, 0.0, 0.2])   # TL moving away from BL
+    v_leader_left_zero = np.zeros(3)
+    v_leader_left_up = np.array([0.0, 0.0, 0.2])   # moving away from follower-left
 
-    _, rhs_no_vel = stretch_constraint(bl, tl, 0.85, alpha_gain, v_tl_zero, True)
-    _, rhs_with_vel = stretch_constraint(bl, tl, 0.85, alpha_gain, v_tl_up, True)
+    _, rhs_no_vel = stretch_constraint(
+        follower_left, leader_left, 0.85, alpha_gain, v_leader_left_zero, True
+    )
+    _, rhs_with_vel = stretch_constraint(
+        follower_left, leader_left, 0.85, alpha_gain, v_leader_left_up, True
+    )
 
-    # If TL moves upward (away from BL), u_BL must keep up → rhs is larger
+    # If leader-left moves away, follower-left must keep up, so rhs is larger.
     assert rhs_with_vel > rhs_no_vel
     assert math.isclose(rhs_with_vel - rhs_no_vel, 0.2, rel_tol=1e-9)
 
 
 def test_velocity_compensation_opposite_direction():
     """Negative v_j (j approaching i) relaxes the constraint."""
-    bl = np.array([0.0, 0.0, 0.0])
-    tl = np.array([0.0, 0.0, 0.7])
-    v_tl_down = np.array([0.0, 0.0, -0.2])   # TL moving toward BL
+    follower_left = np.array([0.0, 0.0, 0.0])
+    leader_left = np.array([0.0, 0.0, 0.7])
+    v_leader_left_down = np.array([0.0, 0.0, -0.2])   # moving toward follower-left
 
-    _, rhs_no_vel = stretch_constraint(bl, tl, 0.85, 1.0, np.zeros(3), True)
-    _, rhs_closing = stretch_constraint(bl, tl, 0.85, 1.0, v_tl_down, True)
+    _, rhs_no_vel = stretch_constraint(follower_left, leader_left, 0.85, 1.0, np.zeros(3), True)
+    _, rhs_closing = stretch_constraint(
+        follower_left, leader_left, 0.85, 1.0, v_leader_left_down, True
+    )
 
     assert rhs_closing < rhs_no_vel
 
@@ -164,9 +178,9 @@ def test_velocity_compensation_opposite_direction():
 
 def test_rhs_positive_when_violated():
     """When h < 0 (fabric overstretched), rhs > 0 forces u toward j."""
-    bl = np.array([0.0, 0.0, 0.0])
-    tl = np.array([0.0, 0.0, 1.0])   # dist=1.0 > d_max=0.85 → h=-0.15
-    _, rhs = stretch_constraint(bl, tl, 0.85, 1.0, np.zeros(3), True)
+    follower_left = np.array([0.0, 0.0, 0.0])
+    leader_left = np.array([0.0, 0.0, 1.0])   # dist=1.0 > d_max=0.85 -> h=-0.15
+    _, rhs = stretch_constraint(follower_left, leader_left, 0.85, 1.0, np.zeros(3), True)
     # rhs = -alpha*h = -1*(-0.15) = 0.15 > 0
     assert rhs > 0.0
     assert math.isclose(rhs, 0.15, rel_tol=1e-9)
@@ -174,9 +188,9 @@ def test_rhs_positive_when_violated():
 
 def test_rhs_negative_when_safe():
     """When h > 0 (fabric within limit), rhs < 0 (constraint easily satisfied)."""
-    bl = np.array([0.0, 0.0, 0.0])
-    tl = np.array([0.0, 0.0, 0.7])   # dist=0.7, h=0.15
-    _, rhs = stretch_constraint(bl, tl, 0.85, 1.0, np.zeros(3), True)
+    follower_left = np.array([0.0, 0.0, 0.0])
+    leader_left = np.array([0.0, 0.0, 0.7])   # dist=0.7, h=0.15
+    _, rhs = stretch_constraint(follower_left, leader_left, 0.85, 1.0, np.zeros(3), True)
     # rhs = -1*0.15 = -0.15 < 0
     assert rhs < 0.0
     assert math.isclose(rhs, -0.15, rel_tol=1e-9)
