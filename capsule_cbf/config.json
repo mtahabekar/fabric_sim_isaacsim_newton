@@ -1,0 +1,16 @@
+{
+  "sectors": 24,
+  "bands": 18,
+  "margin": 0.05,
+  "activation": 0.12,
+  "epsilon_min": 0.001,
+  "epsilon_band": 0.015,
+  "horizon": 10,
+  "local_radius": 2,
+  "sigma": 1.25,
+  "alpha": 2.0,
+  "max_speed": 0.2,
+  "cell_guards": true,
+  "stretch_ratio": 1.02,
+  "formation_gain": 0.5
+}
