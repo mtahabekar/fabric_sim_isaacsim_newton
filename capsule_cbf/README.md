@@ -1,5 +1,31 @@
 # Capsule interaction CBF experiment
 
+The default controller is a **Newton predictor with ray-selected basins**.
+It casts one ray from the capsule center through each of its 432 surface cells,
+keeps the nearest cloth triangle hit only when its signed clearance is at or below
+`margin` (5 cm), and groups those hits with radius-limited k-nearest neighbors.
+Only the most critical hit in each basin supplies an obstacle constraint.
+Triangle strain constraints are **disabled** by default.
+
+Yellow/orange markers show qualifying ray hits; red markers show the basin
+representatives that actually supply constraints. Blue points mark capsule
+cells. A yellow marker is not automatically an optimizer row.
+The previous display showed every nearby particle, including ones up to 12 cm
+beyond the margin, and the full predictor could constrain all of them.
+
+The previous strain recovery and vertical formation correction could command
+followers downward while leaders were idle. Vertical formation recovery is now
+disabled: nominal follower vertical velocity equals leader vertical velocity.
+Planar formation correction remains enabled. An active obstacle constraint may
+still command motion in any direction. No absolute follower speed bound is used.
+
+See [RAY_BASINS.md](RAY_BASINS.md) for the selection, grouping and barrier equations,
+GPU test results, and coverage limitations. [PREDICTIVE_DESIGN.md](PREDICTIVE_DESIGN.md)
+documents the underlying isolated full-cloth predictor and the earlier full
+strain experiment. That earlier mode is available with `ray_basins_enabled:
+false` and `strain_enabled: true`; the bilinear comparison uses
+`predictive_enabled: false`.
+
 This is a separate, experimental run path. No existing simulator, controller,
 message, or launch source is modified. The new model-construction mixin removes
 the legacy `_precompute(builder)` call because current Newton precomputes in the
@@ -66,13 +92,36 @@ ros2 topic echo /fabric/follower_left/applied_cmd_vel
 
 They include minimum capsule clearance, minimum barrier, occupied cells, active
 basin rows, total rows, correction magnitude, solver status and maximum inequality
-violation. `recovery_not_safe` means the simultaneous constraints could not be
-satisfied or the solver failed: the output is a speed-bounded least-squares
+violation. In predictive mode, `prediction_not_safe` means no returned candidate
+passed the selected nonlinear substep check within the configured iteration budget.
+The output is the best checked candidate, **not a safe command**. In bilinear
+comparison mode, `recovery_not_safe` means the simultaneous constraints could not be
+satisfied or the solver failed: the output is a least-squares
 violation recovery, NOT a safe command. Leaders remain under user control; a
 follower-only filter cannot prevent a leader from driving its pinned patch into
-the obstacle. Logs summarize every 60 simulation frames.
+the obstacle.
+The entry point now logs every two seconds of stepping,
+including `controller_ms`, `rollout_ms`, and `optimization_ms`, so slow control
+frames can be distinguished from a stalled application.
 
-## Paper and adaptation
+GPU testing reproduced an apparent frozen window in the original full-row SLSQP
+solve. The filter now generates a small optimizer working set and checks all rows
+before accepting its result; Kit UI events are processed between prediction
+rollouts. A 20-frame Isaac GPU smoke run completed and visibly deformed the cloth.
+Current GPU testing at 56x56 cloth cells measured about 25 ms for idle control
+plus physics and 394 ms median in an intentionally close-start recovery test.
+The latter is still below real-time speed: Newton rollouts dominate, despite
+only 1–4 basin constraints. Both exclude rendering and ROS overhead.
+The close-start test penetrated the capsule; sparse basin control is experimental.
+
+Follower speed limiting is disabled by default (`max_speed: 0.0`), including
+during recovery, so followers can match fast leaders or make faster corrections.
+A positive `max_speed` in the capsule config optionally restores a per-follower
+Euclidean bound. This entry point uses that setting instead of the legacy
+`--follower-command-max-speed` argument. Removing a command speed bound does not
+make conflicting obstacle/stretch rows feasible or validate the cloth prediction.
+
+## Original bilinear/basin controller (`predictive_enabled: false`)
 
 Reference: Yiqing Fan and John T. Wen, *Perception-Driven Control Barrier Functions
 via Geometric Interaction Decomposition*, supplied PDF, Sections II-III and V.
@@ -135,8 +184,10 @@ particles regardless of the active constraint set.
 
 The filter minimizes squared change from leader tracking plus initial-offset
 formation recovery, subject to simultaneous obstacle rows, two leader-follower
-stretch rows, one coupled follower-follower stretch row, and Euclidean follower
-speed bounds. Stretch limits are initial edge lengths times `stretch_ratio`.
+stretch rows, one coupled follower-follower stretch row, and optional Euclidean
+follower speed bounds (disabled by default). Stretch limits
+are initial corner-to-corner edge lengths times `stretch_ratio`; they do not
+measure local triangle strain or follow from Newton's material stiffness.
 SLSQP solves the convex problem; feasibility is checked after numerical speed
 limiting. There is no post-filter smoothing or ordinary stale-command fallback
 that would overwrite a computed correction.
@@ -148,9 +199,11 @@ collision model and has no physical collision schema:
 
 - Blue wireframe: enclosing capsule with meridian/ring boundaries.
 - Blue dots: fixed capsule cell centers.
-- Orange dots: retained fabric detections within the activation range.
+- Orange dots: active cloth particles in predictive mode; retained cell
+  representatives in bilinear comparison mode.
 - Orange segments: analytic capsule surface to those fabric detections.
-- Red dots: closest seed for each active basin.
+- Red dots: closest seed for each active basin in bilinear comparison mode.
+  Predictive mode uses individual particle/triangle rows and has no basin seeds.
 
 Markers correspond to the pre-step geometry used to calculate that frame's
 command, so they can lag the rendered post-step cloth by one simulation step.
@@ -158,16 +211,19 @@ The lower capsule cap extends below the ground and can be occluded by it.
 
 ## Implementation and validation checklist
 
+The checklist and GPU results below describe the original bilinear controller,
+not the new predictive filter. Current validation is in PREDICTIVE_DESIGN.md.
+
 - [x] Trace current launch -> simulator -> distance node -> CBF -> follower path.
 - [x] Read paper geometry, basin construction, filtering, and stated limitations.
 - [x] Preserve original source and provide a separate simulator/launch path.
 - [x] Build an enclosing nonphysical capsule and fixed surface atlas.
 - [x] Compute signed distances, normals, occupied-cell samples, and basin seeds.
 - [x] Replace a single 1x6 avoidance row with Kx6 rows and leader/drift terms.
-- [x] Add simultaneous cell guards, stretch constraints, and speed bounds.
+- [x] Add simultaneous cell guards, stretch constraints, and optional speed bounds.
 - [x] Apply filtered commands to follower targets within the simulation step.
 - [x] Add capsule, cells, detections, seed, and distance-segment USD visuals.
-- [x] Add residual/status/correction diagnostics and bounded infeasible recovery.
+- [x] Add residual/status/correction diagnostics and infeasible recovery.
 - [x] Test enclosure, analytic gradients, material Jacobian derivative, atlas seam,
       sparse cells, independent interactions, multiple-row feasibility, infeasible
       recovery, actual command correction, and an idealized closed-loop plant.
@@ -199,3 +255,5 @@ Validation artifacts from this session: `/tmp/capsule-smoke-high/` (settling)
 and `/tmp/capsule-smoke-driven/` (descent), each with `viewport.png`,
 `capsule_scene.usda`, and `diagnostics.json`. Observed run minima use the particle
 states sampled for control; they are not continuous-time clearance certificates.
+These GPU results were obtained with the previous 0.20 m/s follower bound;
+they have not been revalidated with the new unlimited default.

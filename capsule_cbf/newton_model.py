@@ -1,13 +1,9 @@
-"""Model construction for the current Isaac-bundled Newton API.
-
-Copied from the legacy simulator to preserve that run path. The only behavioral
-change is removing the obsolete explicit _precompute(builder) call: the current
-SolverStyle3D constructor already precomputes from the finalized model.
-"""
+"""Capsule experiment model with prescribed gripper DOFs and shared stepping."""
 import numpy as np
 import warp as wp
 import newton
 from newton.solvers import style3d
+from .newton_runtime import ClothRuntime
 
 
 class CurrentNewtonModelMixin:
@@ -81,6 +77,11 @@ class CurrentNewtonModelMixin:
             gripper_size=self.args.gripper_size,
         )
 
+        # Prescribed boundary DOFs must not move inside Newton's nonlinear
+        # solve; repinning otherwise only conceals their intermediate motion.
+        for idx in self.gripper_flat_indices:
+            builder.particle_flags[int(idx)] &= ~int(newton.ParticleFlags.ACTIVE)
+
         self.model = builder.finalize()
         self.model.set_gravity((0.0, 0.0, -9.81))
         self.model.soft_contact_radius = self.args.contact_radius
@@ -113,3 +114,22 @@ class CurrentNewtonModelMixin:
         self.gripper_flat_corner_ids_wp = wp.array(self.gripper_flat_corner_ids, dtype=int, device=self.device)
         self.gripper_flat_offsets_wp = wp.array(self.gripper_flat_offsets, dtype=wp.vec3, device=self.device)
 
+        self.motion = ClothRuntime(self.model, self.gripper_flat_indices,
+                                   self.gripper_flat_corner_ids, self.gripper_flat_offsets,
+                                   self.sim_substeps, self.sim_dt, self.iterations,
+                                   self.linear_iterations, solver=self.solver,
+                                   capture=self.use_cuda_graph)
+        self.state_0, self.state_1 = self.motion.state, self.motion.scratch
+
+    def capture(self):
+        # ClothRuntime captures with saved/restored state, including odd steps.
+        self.graph = self.motion.graph
+
+    def simulate(self):
+        self.motion._advance()
+
+    def _integrate_corner_targets(self):
+        self.motion.starts.assign(self.corner_target_positions)
+        self.motion.commands.assign(self.corner_target_velocities)
+        self.corner_target_positions += self.corner_target_velocities*self.frame_dt
+        self.corner_targets_wp.assign(self.corner_target_positions)
