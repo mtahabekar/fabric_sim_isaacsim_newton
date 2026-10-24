@@ -5,6 +5,18 @@ The rollout callback is replaceable for CPU tests. No Isaac/Warp imports here.
 import time
 import numpy as np
 from .core import solve_filter
+from .dynamics_sensitivity import SensitivityUnavailable
+from .cloth_state import unpack_cloth_state
+
+
+def dynamics_sensitivity(rollout, reference, leaders, shape):
+    """Validate the optional predictor interface; programming errors propagate."""
+    if not hasattr(rollout, 'sensitivity'):
+        raise SensitivityUnavailable('predictor has no sensitivity interface')
+    jac = np.asarray(rollout.sensitivity(reference, leaders), dtype=float)
+    if jac.shape != (*shape, 6) or not np.isfinite(jac).all():
+        raise SensitivityUnavailable('invalid dynamics observation Jacobian')
+    return jac
 
 
 def six_direction_sensitivity(rollout, reference, leaders, step, baseline=None):
@@ -34,6 +46,7 @@ class PredictiveController:
 
     def update(self, points, corners, leaders, dt, rollout):
         started = time.perf_counter()
+        points, state_debug = unpack_cloth_state(points, self.capsule)
         cfg = self.settings
         points, corners, leaders = [np.asarray(x, dtype=float) for x in (points, corners, leaders)]
         if (corners.shape != (4, 3) or leaders.shape != (2, 3) or dt <= 0
@@ -59,6 +72,7 @@ class PredictiveController:
         calls = 0
         rollout_ms = 0.
         optimization_ms = 0.
+        sensitivity_ms, sensitivity_modes, sensitivity_fallbacks = 0., [], []
         def predict(u):
             nonlocal calls, rollout_ms
             calls += 1
@@ -74,7 +88,7 @@ class PredictiveController:
         rows, rhs = np.empty((0, 6)), np.empty(0)
         reused, refreshed = False, False
         linear_status = 'not_needed'
-        cache_ok = (self.cache is not None
+        cache_ok = (cfg.sensitivity_method == 'finite_difference' and self.cache is not None
                     and self.frame-self.cache['frame'] < cfg.sensitivity_refresh_frames
                     and np.linalg.norm(points-self.cache['points'], axis=1).max() <= cfg.sensitivity_state_threshold
                     and np.linalg.norm(leaders-self.cache['leaders']) <= cfg.sensitivity_command_threshold
@@ -88,9 +102,19 @@ class PredictiveController:
                 jacobian = self.cache['jacobian']
                 reused = True
             else:
-                # predict wrapper holds leaders fixed and counts every rollout.
-                jacobian = six_direction_sensitivity(lambda u, _: predict(u), center,
-                                                       leaders, cfg.sensitivity_step, base)
+                tangent_started = time.perf_counter()
+                jacobian = None
+                if cfg.sensitivity_method != 'finite_difference':
+                    try:
+                        jacobian = dynamics_sensitivity(rollout, center, leaders, base.shape)
+                        sensitivity_modes.append(cfg.sensitivity_method)
+                    except SensitivityUnavailable as error:
+                        sensitivity_fallbacks.append(str(error))
+                if jacobian is None:
+                    jacobian = six_direction_sensitivity(lambda u, _: predict(u), center,
+                                                           leaders, cfg.sensitivity_step, base)
+                    sensitivity_modes.append('finite_difference')
+                sensitivity_ms += 1000*(time.perf_counter()-tangent_started)
                 self.cache = dict(jacobian=jacobian, points=points.copy(), leaders=leaders.copy(),
                                   center=center.copy(), frame=self.frame)
                 refreshed = True
@@ -133,7 +157,7 @@ class PredictiveController:
         self.frame += 1
         d, _, surface = self.capsule.distances(points, self.particle_radius)
         active = np.flatnonzero(current[:n] <= cfg.activation).tolist()
-        debug = dict(status=status, mode='newton_predictive',
+        debug = dict(status=status, mode='newton_predictive', **state_debug,
                      initially_safe=bool(np.all(current >= 0)),
                      predicted_nonnegative=bool(np.all(best_prediction >= 0)),
                      min_clearance=float(d.min()), h_min=float(current[:n].min()),
@@ -143,6 +167,8 @@ class PredictiveController:
                      max_strain_violation=float(np.maximum(target[:, n:]-best_prediction[:, n:], 0).max(initial=0)),
                      linear_status=linear_status, rollout_count=calls,
                      sensitivity_reused=reused, sensitivity_refreshed=refreshed,
+                     sensitivity_ms=sensitivity_ms, sensitivity_modes=sensitivity_modes,
+                     sensitivity_fallbacks=sensitivity_fallbacks,
                      controller_ms=1000*(time.perf_counter()-started),
                      rollout_ms=rollout_ms, optimization_ms=optimization_ms,
                      predicted_min_clearance=float(best_prediction[:, :n].min()+cfg.margin),

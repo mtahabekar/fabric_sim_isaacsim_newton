@@ -6,6 +6,15 @@ state over ROS 2, computes distance from the fabric to a table obstacle, and
 uses an external control barrier function (CBF) node to filter follower
 velocity commands before they are applied back in the simulator.
 
+The separate capsule CBF experiment runs with
+`python3 capsule_cbf/launch_capsule_sim.py`. It now uses a 289-particle GPU
+prediction model while live physics and rendering retain the 3,249-particle
+cloth. See [coarse prediction configuration and validation](capsule_cbf/COARSE_PREDICTION.md)
+and [capsule launch instructions](capsule_cbf/README.md).
+The [mathematical progress report](capsule_cbf/PROGRESS_REPORT.md) summarizes the
+development, equations, measured results, limitations, and primary references
+for research discussion or a professor-facing presentation.
+
 The main workflow is:
 
 ```text

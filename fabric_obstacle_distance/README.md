@@ -4,6 +4,10 @@
 
 The node expects `/fabric/sim/state` to be a `sensor_msgs/msg/PointCloud2` with `x`, `y`, and `z` float fields.
 
+The simulator also publishes `vx`, `vy`, and `vz` in world m/s for every particle.
+This node selects XYZ by name and ignores the extra fields. Consumers must use
+the message's `fields` and `point_step`; the full-state rows are 24 bytes.
+
 ## Build
 
 ```bash

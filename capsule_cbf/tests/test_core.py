@@ -14,6 +14,32 @@ class CapsuleTests(unittest.TestCase):
         np.testing.assert_allclose(self.cap.distances(self.cap.cells)[0], 0., atol=1e-12)
         self.assertLess(self.cap.distances([[0., 0., .16]])[0][0], 0.)
 
+    def test_centered_sphere_top_encloses_box_and_lowers_peak(self):
+        cap = Capsule([0, 0, .16], [.22, .22, .16], top_cap_mode='centered_sphere')
+        radius = np.sqrt(2*.22**2+.16**2)
+        self.assertAlmostEqual(cap.top_sphere_radius, radius)
+        peak = cap.surface([1.], [0.])[0]
+        np.testing.assert_allclose(peak, [0, 0, .16+radius], atol=1e-12)
+        self.assertLess(peak[2], self.cap.surface([1.], [0.])[0, 2])
+        corners = np.array(list(itertools.product((-.22, .22), (-.22, .22), (0., .32))))
+        self.assertTrue(np.all(cap.distances(corners)[0] <= 1e-12))
+        np.testing.assert_allclose(cap.distances(cap.cells)[0], 0., atol=1e-12)
+        top = cap.cells[cap.cells[:, 2] > .32]
+        np.testing.assert_allclose(np.linalg.norm(top-cap.center, axis=1), radius)
+
+    def test_centered_top_signed_distance_normals_and_projection(self):
+        cap = Capsule([.1, -.2, .16], [.22, .22, .16], top_cap_mode='centered_sphere')
+        points = np.random.default_rng(7).uniform(-.7, .7, (300, 3))+cap.center
+        d, normals, surface = cap.distances(points)
+        np.testing.assert_allclose(cap.distances(surface)[0], 0., atol=1e-12)
+        np.testing.assert_allclose(points-surface, d[:, None]*normals, atol=1e-12)
+        np.testing.assert_allclose(np.linalg.norm(normals, axis=1), 1., atol=1e-12)
+        for axis in range(3):
+            eps = np.eye(3)[axis]*1e-6
+            numerical = (cap.distances(points+eps)[0]-cap.distances(points-eps)[0])/2e-6
+            np.testing.assert_allclose(numerical, normals[:, axis], atol=1e-7)
+        np.testing.assert_allclose(cap.distances(points, .008)[0], d-.008)
+
     def test_gradient_finite_difference(self):
         points = np.array([[.5, .1, .2], [.1, .1, .7], [.1, .2, -.3]])
         d, n, _ = self.cap.distances(points, .008)

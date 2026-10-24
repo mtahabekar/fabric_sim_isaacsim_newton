@@ -470,24 +470,22 @@ class FabricRosIo:
     def publish_simulated_fabric_corners(self, corner_positions: np.ndarray) -> None:
         self.pub_sim_fabric_corners.publish(self._make_pose_array(corner_positions))
 
-    def publish_simulated_fabric_state(self, particle_positions: np.ndarray) -> None:
-        points = np.asarray(particle_positions, dtype=np.float32)
-        points = np.ascontiguousarray(points[:, :3])
+    def publish_simulated_fabric_state(self, particle_positions: np.ndarray,
+                                       particle_velocities: np.ndarray = None) -> None:
+        from capsule_cbf.cloth_state import particle_state_payload
+        names, points = particle_state_payload(particle_positions, particle_velocities)
 
         msg = PointCloud2()
         msg.header.frame_id = self.frame_id
         msg.header.stamp = self.node.get_clock().now().to_msg()
         msg.height = 1
         msg.width = int(points.shape[0])
-        msg.fields = [
-            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
-            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
-            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
-        ]
+        msg.fields = [PointField(name=name, offset=4*i, datatype=PointField.FLOAT32, count=1)
+                      for i, name in enumerate(names)]
         msg.is_bigendian = False
-        msg.point_step = 12
+        msg.point_step = 4*len(names)
         msg.row_step = msg.point_step * msg.width
-        msg.is_dense = True
+        msg.is_dense = bool(np.isfinite(points).all())
         msg.data = points.tobytes()
         self.pub_sim_fabric_state.publish(msg)
 
@@ -1079,7 +1077,8 @@ class Style3DIsaacStandalone:
         self._update_usd_visuals()
         self.ros.publish_simulated_fabric_corners(self._get_actual_corner_positions())
         if self._frame_index % self.state_publish_every == 0:
-            self.ros.publish_simulated_fabric_state(self._cached_cloth_particles)
+            cloth_state = self.get_cloth_state()
+            self.ros.publish_simulated_fabric_state(cloth_state.positions, cloth_state.velocities)
         frame_time_ms = max(0.0, (time.perf_counter() - frame_started) * 1000.0)
         self.ros.publish_sim_timing(
             sim_time_sec=self.sim_time,
@@ -1104,6 +1103,12 @@ class Style3DIsaacStandalone:
         particles = self._read_cloth_particles_from_state()
         self._cached_cloth_particles = particles
         return particles
+
+    def get_cloth_state(self):
+        """World-frame position and velocity of every cloth particle."""
+        from capsule_cbf.cloth_state import ClothState
+        return ClothState.from_newton(self.state_0, self.cloth_particle_start,
+                                      self.cloth_particle_end-self.cloth_particle_start)
 
     def _read_cloth_particles_from_state(self) -> np.ndarray:
         q = self.state_0.particle_q.numpy()

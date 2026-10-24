@@ -15,6 +15,7 @@ from newton.solvers import style3d
 from capsule_cbf.core import Capsule, Settings
 from capsule_cbf.strain import TriangleStrain
 from capsule_cbf.newton_runtime import ClothRuntime, NewtonPredictor
+from capsule_cbf.coarse_prediction import create_predictor
 from capsule_cbf.predictive import PredictiveController, six_direction_sensitivity
 from capsule_cbf.ray_basins import RayBasinController
 from capsule_cbf.newton_runtime import CapsuleRayDetector
@@ -48,9 +49,9 @@ def build_fixture(grid, substeps, device, cfg, cloth_z=1.05):
     model.set_gravity((0, 0, -9.81))
     model.soft_contact_ke, model.soft_contact_kd, model.soft_contact_mu = 4000., .01, 2.
     model.soft_contact_margin = .012
-    cap = Capsule([0, 0, .16], [.22, .22, .16])
+    cap = Capsule([0, 0, .16], [.22, .22, .16], top_cap_mode=cfg.top_cap_mode)
     live = ClothRuntime(model, patch, ids, offsets, substeps, 1/60/substeps, 10, 16)
-    predictor = NewtonPredictor(model, patch, ids, offsets, substeps, 1/60/substeps, 10, 16,
+    predictor = create_predictor(model, patch, ids, offsets, substeps, 1/60/substeps, 10, 16,
                                 cap, .008, cfg)
     strain = TriangleStrain(model.tri_indices.numpy(), model.tri_poses.numpy(),
                             cfg.weft_strain_limit, cfg.warp_strain_limit, cfg.shear_limit)
@@ -66,10 +67,17 @@ def main():
     p.add_argument('--device', default='cpu')
     p.add_argument('--grid', type=int, default=8)
     p.add_argument('--substeps', type=int, default=8)
+    p.add_argument('--prediction-grid-cells', type=int, default=0,
+                   help='Coarse predictor base cells per axis; 0 uses the live mesh.')
     p.add_argument('--frames', type=int, default=12)
     p.add_argument('--settle-frames', type=int, default=4)
     p.add_argument('--leader-z', type=float, default=-.05)
     p.add_argument('--cloth-z', type=float, default=1.05)
+    p.add_argument('--sensitivity-method', default='solver_tangent',
+                   choices=['solver_tangent', 'finite_difference'])
+    p.add_argument('--sensitivity-backend', default='warp', choices=['warp', 'cpu'])
+    p.add_argument('--top-cap-mode', default='centered_sphere',
+                   choices=['centered_sphere', 'hemisphere'])
     p.add_argument('--output', type=Path, default=Path('/tmp/capsule-newton-validation.json'))
     args = p.parse_args()
     faulthandler.dump_traceback_later(30, repeat=True)
@@ -77,15 +85,24 @@ def main():
         p.error('grid >= 4, frames/substeps >= 1 required')
     wp.config.kernel_cache_dir = '/tmp/capsule-cbf-warp-cache'
     wp.init()
-    cfg = Settings()
+    cfg = Settings(sensitivity_method=args.sensitivity_method, top_cap_mode=args.top_cap_mode,
+                   sensitivity_backend=args.sensitivity_backend, prediction_grid_cells=args.prediction_grid_cells)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     with wp.ScopedDevice(args.device):
         model, live, pred, ctrl, corners, starts = build_fixture(args.grid, args.substeps, args.device, cfg,
                                                               args.cloth_z)
         u, leaders = np.zeros((2, 3)), np.zeros((2, 3))
         before = live.state.particle_q.numpy().copy()
         pred.begin(live.state, starts)
+        if args.prediction_grid_cells:
+            # Use fixed material samples for the coarse derivative audit.
+            faces = np.linspace(0, model.tri_count-1, min(32, model.tri_count), dtype=int)
+            pred.select_hits(faces, np.full((len(faces), 3), 1/3))
         base = pred(u, leaders)
-        jac = six_direction_sensitivity(pred, u, leaders, cfg.sensitivity_step, base)
+        sensitivity_started = time.perf_counter()
+        jac = (six_direction_sensitivity(pred, u, leaders, cfg.sensitivity_step, base)
+               if cfg.sensitivity_method == 'finite_difference' else pred.sensitivity(u, leaders))
+        sensitivity_ms = 1000*(time.perf_counter()-sensitivity_started)
         central = []
         for d in np.eye(6):
             central.append((pred(u+.01*d.reshape(2, 3), leaders)
@@ -105,7 +122,7 @@ def main():
             points = live.state.particle_q.numpy()
             pred.begin(live.state, starts)
             begin = time.perf_counter()
-            command, debug = ctrl.update(points, points[corners], leaders, 1/60, pred)
+            command, debug = ctrl.update(pred.current_cloth_state(), points[corners], leaders, 1/60, pred)
             control_ms = (time.perf_counter()-begin)*1000
             # Independent confirmation of the command actually returned,
             # including an earlier best candidate in infeasible recovery.
@@ -121,16 +138,31 @@ def main():
             debug.update(frame=frame, control_ms=control_ms, physics_ms=physics_ms,
                          control_plus_physics_ms=control_ms+physics_ms,
                          live_prediction_max_error=float(np.linalg.norm(actual-predicted_points, axis=1).max()),
+                         live_prediction_rmse=float(np.sqrt(np.mean(np.sum((actual-predicted_points)**2, axis=1)))),
                          actual_min_clearance=float(ctrl.capsule.distances(actual, .008)[0].min()),
                          actual_min_strain_barrier=float(ctrl.strain.barriers(actual).min()))
+            debug.update(getattr(pred, 'resolution_info', {'prediction_model': 'full'}))
+            if hasattr(pred, 'selected_fine_faces'):
+                hit_points = np.einsum('ij,ijk->ik', pred.selected_fine_weights,
+                                      actual[model.tri_indices.numpy()[pred.selected_fine_faces]])
+                measured = ctrl.capsule.distances(hit_points, .008)[0]-cfg.margin
+                debug['selected_endpoint_barrier_max_error'] = float(abs(predicted[-1]-measured).max(initial=0.))
             records.append(debug)
             with progress.open('a') as stream:
                 stream.write(json.dumps(debug)+'\n')
             starts = starts+np.vstack((command, leaders)).astype(np.float32)/60
         report = dict(device=args.device, grid=args.grid, cloth_z=args.cloth_z,
+                      top_cap_mode=cfg.top_cap_mode,
                       particles=model.particle_count,
                       triangles=model.tri_count, substeps=args.substeps,
+                      prediction_resolution=getattr(pred, 'resolution_info', {'prediction_model': 'full'}),
                       predictor_isolation=isolation,
+                      sensitivity_method=cfg.sensitivity_method, sensitivity_ms=sensitivity_ms,
+                      sensitivity_backend=cfg.sensitivity_backend,
+                      sensitivity_timing_note=(
+                          'Warp derivative compute is included in rollout time; sensitivity_ms is extraction only.'
+                          if cfg.sensitivity_method != 'finite_difference' and cfg.sensitivity_backend == 'warp'
+                          else 'sensitivity_ms includes finite-difference rollouts or CPU derivative replay.'),
                       sensitivity_max_central_error=float(abs(jac-central).max()),
                       sensitivity_heldout_barrier_error=float(abs(holdout-estimated).max()),
                       frames=records, material_audit=audit_style3d(),

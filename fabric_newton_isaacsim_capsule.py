@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Separate synchronous capsule CBF entry point; legacy simulator is unchanged."""
+"""Synchronous capsule CBF with configurable coarse or full Newton prediction."""
 import argparse
 import json
 import sys
@@ -31,7 +31,7 @@ import numpy as np
 from pxr import UsdGeom
 from std_msgs.msg import String
 from capsule_cbf.newton_model import CurrentNewtonModelMixin
-from capsule_cbf.newton_runtime import NewtonPredictor
+from capsule_cbf.coarse_prediction import create_predictor
 from capsule_cbf.predictive import PredictiveController
 from capsule_cbf.ray_basins import RayBasinController
 from capsule_cbf.newton_runtime import CapsuleRayDetector
@@ -47,7 +47,7 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
         args.follower_command_max_speed = settings.max_speed
         super().__init__(args)
         capsule = Capsule([0., 0., args.table_hz], self.table_half_extents,
-                          settings.sectors, settings.bands)
+                          settings.sectors, settings.bands, settings.top_cap_mode)
         self.capsule_controller = CapsuleController(capsule, self.get_cloth_particles(),
                                                     self.initial_corner_positions,
                                                     self.cloth_particle_radius, settings)
@@ -65,7 +65,7 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
             self.predictive_controller = PredictiveController(
                 capsule, strain, self.initial_corner_positions, self.cloth_particle_radius,
                 settings, self.sim_substeps)
-            self.predictor = NewtonPredictor(
+            self.predictor = create_predictor(
                 self.model, self.gripper_flat_indices, self.gripper_flat_corner_ids,
                 self.gripper_flat_offsets, self.sim_substeps, self.sim_dt,
                 self.iterations, self.linear_iterations, capsule,
@@ -74,6 +74,8 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
                 particle_count=self.cloth_particle_end-self.cloth_particle_start,
                 capture=self.use_cuda_graph)
             self.predictor.progress_callback = legacy.simulation_app.update
+            print('[capsule CBF] prediction resolution:', getattr(self.predictor, 'resolution_info',
+                  {'prediction_model': 'full', 'prediction_particles': self.model.particle_count}))
             if settings.ray_basins_enabled:
                 detector = CapsuleRayDetector(self.model, self.state_0, capsule)
                 self.predictive_controller = RayBasinController(
@@ -102,7 +104,10 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
         self._capsule_lines('DistanceSegments', [], (1., .65, .05), .002)
         print(f'[capsule CBF] synchronous filter; radius={capsule.radius:.4f} m, '
               f'cells={len(capsule.cells)}, predictive={settings.predictive_enabled}, '
-              f'ray_basins={settings.ray_basins_enabled}, strain={settings.strain_enabled}')
+              f'ray_basins={settings.ray_basins_enabled}, strain={settings.strain_enabled}, '
+              f'sensitivity={settings.sensitivity_method}/{settings.sensitivity_backend}')
+        print(f'[capsule CBF] top={capsule.top_cap_mode}, '
+              f'top sphere radius={capsule.top_sphere_radius:.4f} m')
 
     def _capsule_points(self, name, points, color, width):
         prim = UsdGeom.Points.Define(self.stage, '/World/CapsuleCBF/'+name)
@@ -124,15 +129,18 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
         return prim
 
     def _compute_follower_applied_velocities(self, leader_cmd_vels):
-        points = self.get_cloth_particles()
         if self.predictor is None:
+            points = self.get_cloth_particles()
             command, debug = self.capsule_controller.update(
                 points, self._get_actual_corner_positions(), leader_cmd_vels, self.frame_dt)
         else:
             prediction_started = time.perf_counter()
             self.predictor.begin(self.state_0, self.corner_target_positions)
+            # The CBF and predictor see the same full-particle q/v snapshot.
+            cloth_state = self.predictor.current_cloth_state()
+            points = cloth_state.positions
             command, debug = self.predictive_controller.update(
-                points, self._get_actual_corner_positions(), leader_cmd_vels,
+                cloth_state, self._get_actual_corner_positions(), leader_cmd_vels,
                 self.frame_dt, self.predictor)
             if self.predicted_points is not None:
                 error = points-self.predicted_points
@@ -144,6 +152,8 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
             self.predicted_points = (self.predictor.final_points()
                                      if debug['status'] == 'feasible' and debug['rollout_count'] else None)
             debug['prediction_total_ms'] = 1000*(time.perf_counter()-prediction_started)
+            debug['last_sensitivity_timings'] = self.predictor.last_sensitivity_timings
+            debug.update(getattr(self.predictor, 'resolution_info', {'prediction_model': 'full'}))
         self.capsule_debug = debug
         self.smoke_min_clearance = min(self.smoke_min_clearance, debug['min_clearance'])
         self.smoke_recovery_frames += int(debug['status'] != 'feasible')

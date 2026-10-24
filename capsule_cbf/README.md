@@ -1,11 +1,47 @@
 # Capsule interaction CBF experiment
 
 The default controller is a **Newton predictor with ray-selected basins**.
+CBF prediction now uses a separate **289-particle coarse cloth** by default;
+live physics, rendering and current obstacle detection retain all **3,249
+particles**. Positions and velocities are refreshed from the live state every
+frame, total mass and gripper dimensions are preserved, and selected hits are
+anchored to measured fine-mesh positions. Set `prediction_grid_cells: 0` to
+restore full prediction. See [the coarse-model guide](COARSE_PREDICTION.md) for
+mapping, approximation limits and benchmarks (about 178 ms per active frame
+versus 280 ms with full-resolution GPU prediction).
+
+The default top boundary is now a spherical section centered at the cube center,
+with radius `sqrt(hx² + hy² + hz²)`, meeting the cylindrical sides at the top-face
+plane. This is the smallest sphere with that center that encloses all top corners.
+For the configured half-extents (0.22, 0.22, 0.16) m, the top gap decreases from
+31.1 cm to 19.0 cm. The explicit 5 cm CBF margin is separate and unchanged.
+Set `top_cap_mode` to `hemisphere` in `config.json` to restore the previous cap.
 It casts one ray from the capsule center through each of its 432 surface cells,
 keeps the nearest cloth triangle hit only when its signed clearance is at or below
 `margin` (5 cm), and groups those hits with radius-limited k-nearest neighbors.
 Only the most critical hit in each basin supplies an obstacle constraint.
 Triangle strain constraints are **disabled** by default.
+
+The launch configuration now uses `sensitivity_method: solver_tangent` and
+`sensitivity_backend: warp`: analytic derivatives alongside Style3D's PD/PCG
+iterations run on its device (CUDA on the GPU), replacing the six perturbed
+rollouts when contact is absent. Each basin has a constraint at every substep;
+nonlinear command validation remains enabled. Contact falls back to finite
+differences. See [the detailed implementation and validation guide](DYNAMICS_SENSITIVITY.md)
+for equations, solver changes, limitations, and how to revert. The six-probe
+descriptions below and in the earlier design notes describe the legacy mode.
+The default derivative path has no checkpoint tape or CPU replay and supports
+predictor CUDA graphs. See [GPU implementation and validation](GPU_SENSITIVITY.md).
+On the host RTX 5070 Laptop GPU, the 3,249-particle active-CBF benchmark decreased
+from roughly 5.04 s/frame with CPU derivative replay to 0.28 s/frame with inline
+Warp derivatives. This is headless control plus physics, not rendered FPS;
+the full-resolution active controller still needs further work for real-time use.
+
+Predictive CBF updates receive a `ClothState` with positions **and velocities of
+every cloth particle**. `/fabric/sim/state` now includes `vx,vy,vz` float32 fields
+alongside `x,y,z` (`point_step=24`). The dynamics guide explains the state API,
+instantaneous clearance rates, and why measured velocities complement the
+command-response tangent rather than replace it.
 
 Yellow/orange markers show qualifying ray hits; red markers show the basin
 representatives that actually supply constraints. Blue points mark capsule
@@ -26,8 +62,8 @@ strain experiment. That earlier mode is available with `ray_basins_enabled:
 false` and `strain_enabled: true`; the bilinear comparison uses
 `predictive_enabled: false`.
 
-This is a separate, experimental run path. No existing simulator, controller,
-message, or launch source is modified. The new model-construction mixin removes
+This is a separate, experimental run path. The shared standalone simulator also
+exposes full cloth state and publishes particle velocities. The model-construction mixin removes
 the legacy `_precompute(builder)` call because current Newton precomputes in the
 solver constructor from the finalized model. The existing full-stack launcher still
 runs the original method.
@@ -108,7 +144,7 @@ GPU testing reproduced an apparent frozen window in the original full-row SLSQP
 solve. The filter now generates a small optimizer working set and checks all rows
 before accepting its result; Kit UI events are processed between prediction
 rollouts. A 20-frame Isaac GPU smoke run completed and visibly deformed the cloth.
-Current GPU testing at 56x56 cloth cells measured about 25 ms for idle control
+Earlier GPU testing at 56x56 cloth cells measured about 25 ms for idle control
 plus physics and 394 ms median in an intentionally close-start recovery test.
 The latter is still below real-time speed: Newton rollouts dominate, despite
 only 1–4 basin constraints. Both exclude rendering and ROS overhead.

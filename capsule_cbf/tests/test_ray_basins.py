@@ -52,6 +52,41 @@ class RayBasinTests(unittest.TestCase):
         self.assertGreater(u[:, 2].mean(), 0)
         self.assertLessEqual(debug['max_violation'], 1e-6)
 
+    def test_solver_tangent_uses_two_rollouts_and_all_substeps(self):
+        from capsule_cbf.cloth_state import ClothState
+        ctrl, rollout, corners = self.fixture(np.array([[0, 0, .28]]))
+        ctrl.settings.sensitivity_method = 'solver_tangent'
+        def sensitivity(u, leaders):
+            jac = np.zeros((3, len(rollout.faces), 6))
+            jac[:, :, 2] = np.arange(1, 4)[:, None]/360
+            jac[:, :, 5] = jac[:, :, 2]
+            return jac
+        rollout.sensitivity = sensitivity
+        state = ClothState(corners, np.full_like(corners, .1))
+        u, debug = ctrl.update(state, corners, np.zeros((2, 3)), 1/60, rollout)
+        self.assertTrue(debug['state_velocity_available'])
+        self.assertEqual(debug['state_particle_count'], len(corners))
+        self.assertEqual(debug['status'], 'feasible')
+        self.assertEqual(debug['rollout_count'], 2)
+        self.assertEqual(debug['total_rows'], 3)
+        self.assertEqual(debug['sensitivity_modes'], ['solver_tangent'])
+        self.assertEqual(debug['sensitivity_fallbacks'], [])
+
+    def test_unavailable_tangent_falls_back_and_still_validates(self):
+        from capsule_cbf.dynamics_sensitivity import SensitivityUnavailable
+        ctrl, rollout, corners = self.fixture(np.array([[0, 0, .28]]))
+        ctrl.settings.sensitivity_method = 'solver_tangent'
+        def sensitivity(u, leaders):
+            raise SensitivityUnavailable('contact active')
+        rollout.sensitivity = sensitivity
+        _, debug = ctrl.update(corners, corners, np.zeros((2, 3)), 1/60, rollout)
+        self.assertEqual(debug['status'], 'feasible')
+        # The min-over-substeps FD path may need a second linearization.
+        iterations = len(debug['sensitivity_modes'])
+        self.assertEqual(debug['rollout_count'], 1+7*iterations)
+        self.assertEqual(debug['sensitivity_modes'], ['finite_difference']*iterations)
+        self.assertEqual(debug['sensitivity_fallbacks'], ['contact active']*iterations)
+
 
 if __name__ == '__main__':
     unittest.main()

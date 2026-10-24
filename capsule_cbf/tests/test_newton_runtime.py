@@ -22,7 +22,8 @@ class NewtonRuntimeTests(unittest.TestCase):
         wp.config.kernel_cache_dir = '/tmp/capsule-cbf-warp-cache'
         wp.init()
 
-    def fixture(self, substeps=3, contact=False):
+    def fixture(self, substeps=3, contact=False, sensitivity_method='finite_difference', iterations=5,
+                top_cap_mode='hemisphere', sensitivity_backend='warp'):
         from newton.solvers import style3d
         from capsule_cbf.core import Capsule, Settings
         from capsule_cbf.newton_runtime import ClothRuntime, NewtonPredictor
@@ -47,16 +48,166 @@ class NewtonRuntimeTests(unittest.TestCase):
             model.soft_contact_ke, model.soft_contact_kd, model.soft_contact_mu = 4000., .01, 2.
             model.soft_contact_margin = .012
             live = ClothRuntime(model, indices, np.arange(4), np.zeros((4, 3)),
-                                substeps, 1/60/substeps, 5, 8, capture=False)
+                                substeps, 1/60/substeps, iterations, 8, capture=False)
             if contact:
                 q = live.state.particle_q.numpy()
                 q[12, 2] = .318
                 live.state.particle_q.assign(q)
-            cfg = Settings(strain_enabled=True, ray_basins_enabled=False)
-            cap = Capsule([0, 0, .16], [.22, .22, .16])
+            cfg = Settings(strain_enabled=True, ray_basins_enabled=False,
+                           sensitivity_method=sensitivity_method, top_cap_mode=top_cap_mode,
+                           sensitivity_backend=sensitivity_backend)
+            cap = Capsule([0, 0, .16], [.22, .22, .16], top_cap_mode=top_cap_mode)
             predictor = NewtonPredictor(model, indices, np.arange(4), np.zeros((4, 3)),
-                                         substeps, 1/60/substeps, 5, 8, cap, .008, cfg, capture=False)
+                                         substeps, 1/60/substeps, iterations, 8, cap, .008, cfg, capture=False)
         return model, live, predictor, indices, rest[indices], cfg, cap
+
+    def test_centered_top_warp_distances_and_tangent(self):
+        from capsule_cbf.newton_runtime import observe_particles
+        _, live, pred, _, starts, cfg, cap = self.fixture(
+            sensitivity_method='solver_tangent', top_cap_mode='centered_sphere')
+        points = np.random.default_rng(17).uniform(-.6, .6, (200, 3))+cap.center
+        q = wp.array(points, dtype=wp.vec3, device='cpu')
+        out = wp.zeros((1, len(points)), dtype=float, device='cpu')
+        wp.launch(observe_particles, len(points), inputs=[q, 0, len(points), wp.vec3(*cap.center),
+                  cap.half_length, cap.radius, 1, .008, cfg.margin, 0, out], device='cpu')
+        np.testing.assert_allclose(out.numpy()[0], cap.distances(points, .008)[0]-cfg.margin, atol=2e-7)
+        pred.select_hits(np.array([0, 10]), np.array([[.2, .3, .5], [.1, .6, .3]]))
+        u = np.full((2, 3), .01)
+        leaders = np.zeros((2, 3))
+        pred.begin(live.state, starts)
+        observed = pred(u, leaders)
+        jac = pred.sensitivity(u, leaders)
+        triangles = pred.runtime.model.tri_indices.numpy()[pred.selected_faces]
+        hit_points = np.einsum('ti,tix->tx', pred.selected_weights, pred.final_points()[triangles])
+        np.testing.assert_allclose(observed[-1], cap.distances(hit_points, .008)[0]-cfg.margin, atol=2e-7)
+        direction = np.array([.7, -.3, .5, -.2, .6, -.4])
+        numerical = (pred(u+.01*direction.reshape(2, 3), leaders)
+                     -pred(u-.01*direction.reshape(2, 3), leaders))/.02
+        np.testing.assert_allclose(jac@direction, numerical, atol=4e-5, rtol=.02)
+
+    def test_solver_tangent_against_central_and_pin_motion(self):
+        for substeps in (3, 4):
+            model, live, pred, ids, starts, cfg, cap = self.fixture(
+                substeps, sensitivity_method='solver_tangent')
+            before = live.state.particle_q.numpy().copy()
+            u = np.array([[.02, -.01, .015], [-.01, .02, -.01]])
+            leaders = np.zeros((2, 3))
+            pred.begin(live.state, starts)
+            base = pred(u, leaders)
+            jac = pred.sensitivity(u, leaders)
+            self.assertEqual(pred.calls, 1)
+            np.testing.assert_array_equal(before, live.state.particle_q.numpy())
+            tangent = pred.runtime.solver.sq.numpy().transpose(1, 2, 0)
+            np.testing.assert_allclose(tangent[ids[0], :, :3], np.eye(3)/60)
+            np.testing.assert_array_equal(tangent[ids[2]], 0)
+            central = np.stack([(pred(u+.002*d.reshape(2, 3), leaders)
+                                 -pred(u-.002*d.reshape(2, 3), leaders))/.004
+                                for d in np.eye(6)], axis=-1)
+            print('Solver tangent central error:', np.max(abs(jac-central)),
+                  'relative norm:', np.linalg.norm(jac-central)/np.linalg.norm(central))
+            np.testing.assert_allclose(jac, central, atol=3e-4, rtol=.01)
+            self.assertLess(np.linalg.norm(jac-central)/np.linalg.norm(central), .005)
+            direction = np.array([.7, -.3, .5, -.2, .6, -.4])
+            actual = pred(u+.002*direction.reshape(2, 3), leaders)
+            self.assertLess(np.max(abs(actual-base-.002*(jac@direction))), 3e-5)
+
+    def test_inline_warp_matches_cpu_reference_without_checkpoints(self):
+        for substeps, mode in ((3, 'hemisphere'), (4, 'centered_sphere')):
+            outputs = []
+            for backend in ('cpu', 'warp'):
+                _, live, pred, ids, starts, _, _ = self.fixture(
+                    substeps, sensitivity_method='solver_tangent',
+                    sensitivity_backend=backend, top_cap_mode=mode)
+                rng = np.random.default_rng(12)
+                q = live.state.particle_q.numpy()
+                perturb = rng.normal(0, .0002, q.shape)
+                perturb[ids] = 0
+                live.state.particle_q.assign(q+perturb)
+                live.state.particle_qd.assign(rng.normal(0, .02, q.shape))
+                u = np.array([[.02, -.01, .015], [-.01, .02, -.01]])
+                leaders = np.full((2, 3), .01)
+                pred.begin(live.state, starts)
+                value = pred(u, leaders)
+                jac = pred.sensitivity(u, leaders)
+                points = pred.final_points()
+                # Distinct commands cannot reuse stale derivative buffers.
+                pred(u+.01, leaders)
+                repeated = pred(u, leaders)
+                np.testing.assert_array_equal(repeated, value)
+                np.testing.assert_array_equal(pred.sensitivity(u, leaders), jac)
+                outputs.append((value, jac, points))
+                if backend == 'warp':
+                    self.assertFalse(hasattr(pred.runtime.solver, 'cg_tape'))
+                    self.assertFalse(hasattr(pred.runtime.solver, 'linear_records'))
+                    self.assertEqual(pred.last_sensitivity_timings['replay_ms'], 0.)
+            np.testing.assert_array_equal(outputs[0][0], outputs[1][0])
+            np.testing.assert_array_equal(outputs[0][2], outputs[1][2])
+            np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=3e-5, rtol=.002)
+
+    def test_inline_step_has_no_host_readbacks_or_checkpoint_clones(self):
+        from unittest.mock import patch
+        _, live, pred, _, starts, _, _ = self.fixture(sensitivity_method='solver_tangent')
+        u = np.full((2, 3), .01)
+        pred.begin(live.state, starts)
+        pred(u, u)  # warm compiled kernels
+        expected = pred.final_points()
+        r = pred.runtime
+        r.state.assign(pred.snapshot)
+        r.scratch.assign(pred.snapshot)
+        with patch.object(wp.array, 'numpy', side_effect=AssertionError('host readback in physics')):
+            with patch.object(wp, 'clone', side_effect=AssertionError('checkpoint allocation')):
+                r.advance(starts, np.vstack((u, u)))
+        np.testing.assert_array_equal(pred.final_points(), expected)
+
+    def test_solver_tangent_contact_rejected_and_stale_trajectory_rejected(self):
+        from capsule_cbf.dynamics_sensitivity import SensitivityUnavailable
+        _, live, pred, _, starts, _, _ = self.fixture(contact=True, sensitivity_method='solver_tangent')
+        u = np.zeros((2, 3))
+        pred.begin(live.state, starts)
+        pred(u, u)
+        with self.assertRaisesRegex(SensitivityUnavailable, 'contact active'):
+            pred.sensitivity(u, u)
+        pred.begin(live.state, starts)
+        with self.assertRaisesRegex(SensitivityUnavailable, 'does not match'):
+            pred.sensitivity(u, u)
+
+    def test_interior_velocity_is_exposed_and_changes_prediction(self):
+        _, live, pred, ids, starts, _, _ = self.fixture(sensitivity_method='solver_tangent')
+        u = np.zeros((2, 3))
+        pred.begin(live.state, starts)
+        resting = pred(u, u)
+        v = live.state.particle_qd.numpy()
+        interior = next(i for i in range(len(v)) if i not in ids)
+        v[interior] = [0, 0, -.2]
+        live.state.particle_qd.assign(v)
+        pred.begin(live.state, starts)
+        state = pred.current_cloth_state()
+        self.assertEqual(len(state.positions), len(v))
+        np.testing.assert_array_equal(state.velocities, v)
+        np.testing.assert_array_equal(state.velocities[ids], 0)
+        moving = pred(u, u)
+        self.assertGreater(np.max(abs(moving-resting)), 1e-5)
+        # Subsequent predictions do not mutate the explicit starting snapshot.
+        np.testing.assert_array_equal(pred.current_cloth_state().velocities, v)
+
+    def test_solver_tangent_selected_hits_and_live_agreement(self):
+        _, live, pred, _, starts, _, _ = self.fixture(sensitivity_method='solver_tangent')
+        faces, weights = np.array([0, 10]), np.array([[.2, .3, .5], [.1, .6, .3]])
+        pred.select_hits(faces, weights)
+        u = np.array([[.02, -.01, .015], [-.01, .02, -.01]])
+        leaders = np.zeros((2, 3))
+        pred.begin(live.state, starts)
+        pred(u, leaders)
+        expected = pred.final_points()
+        jac = pred.sensitivity(u, leaders)
+        live.advance(starts, np.vstack((u, leaders)))
+        np.testing.assert_array_equal(expected, live.state.particle_q.numpy())
+        # Larger perturbation resolves float32 distance quantization at these
+        # nearly horizontal material hits (~1e-5 command derivatives).
+        central = np.stack([(pred(u+.01*d.reshape(2, 3), leaders)
+                             -pred(u-.01*d.reshape(2, 3), leaders))/.02
+                            for d in np.eye(6)], axis=-1)
+        np.testing.assert_allclose(jac, central, atol=4e-5, rtol=.01)
 
     def test_substep_boundary_velocity_and_odd_even_rollout_agreement(self):
         from capsule_cbf.strain import TriangleStrain
@@ -176,6 +327,8 @@ class NewtonRuntimeTests(unittest.TestCase):
         from capsule_cbf.newton_runtime import ClothRuntime, NewtonPredictor
         for substeps in (3, 4):
             model, _, _, ids, starts, cfg, cap = self.fixture(substeps)
+            cfg.sensitivity_method = 'solver_tangent'
+            cfg.sensitivity_backend = 'warp'
             # Build a fresh GPU model by using the shared headless fixture.
             from capsule_cbf.validate_newton import build_fixture
             model, live, pred, _, ids, starts = build_fixture(4, substeps, 'cuda:0', cfg)
@@ -184,6 +337,13 @@ class NewtonRuntimeTests(unittest.TestCase):
             pred.select_hits(np.array([0]), np.array([[.2, .3, .5]]))
             pred.begin(live.state, starts)
             observed = pred(u, leaders)
+            self.assertIsNotNone(pred.runtime.graph)
+            jac = pred.sensitivity(u, leaders)
+            self.assertTrue(np.isfinite(jac).all())
+            # Graph replay must reset derivative state and reuse device buffers.
+            pred(u+.01, leaders)
+            np.testing.assert_allclose(pred(u, leaders), observed, atol=2e-6)
+            np.testing.assert_allclose(pred.sensitivity(u, leaders), jac, atol=2e-5, rtol=.01)
             self.assertEqual(observed.shape, (substeps, 1))
             expected = pred.final_points()
             np.testing.assert_array_equal(before, live.state.particle_q.numpy())

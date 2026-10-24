@@ -36,6 +36,10 @@ class Settings:
     shear_limit: float = 0.20  # absolute cosine of material-axis angle
     strain_activation: float = 0.005
     sensitivity_step: float = 0.02  # m/s; ~0.33 mm/frame at 60 Hz
+    sensitivity_method: str = 'finite_difference'
+    sensitivity_backend: str = 'warp'
+    prediction_grid_cells: int = 0  # 0: full mesh; otherwise base cells per material axis
+    top_cap_mode: str = 'hemisphere'
     sensitivity_refresh_frames: int = 5
     sensitivity_state_threshold: float = 0.003  # maximum particle motion, m
     sensitivity_command_threshold: float = 0.02  # m/s
@@ -45,6 +49,17 @@ class Settings:
     strain_tightening: float = 0.00001
 
     def __post_init__(self):
+        if (not isinstance(self.prediction_grid_cells, int) or isinstance(self.prediction_grid_cells, bool)
+                or self.prediction_grid_cells < 0 or self.prediction_grid_cells == 1):
+            raise ValueError('prediction_grid_cells must be 0 or an integer >= 2')
+        if self.prediction_grid_cells and (not self.ray_basins_enabled or self.strain_enabled):
+            raise ValueError('Coarse prediction currently requires ray basins with strain disabled')
+        if self.sensitivity_backend not in ('warp', 'cpu'):
+            raise ValueError('Unknown sensitivity_backend')
+        if self.top_cap_mode not in ('hemisphere', 'centered_sphere'):
+            raise ValueError('Unknown top_cap_mode')
+        if self.sensitivity_method not in ('finite_difference', 'solver_tangent'):
+            raise ValueError('Unknown sensitivity_method')
         for name in ('sectors', 'bands', 'horizon', 'local_radius',
                      'sensitivity_refresh_frames', 'prediction_iterations', 'basin_knn'):
             value = getattr(self, name)
@@ -70,8 +85,8 @@ class Settings:
 
 
 class Capsule:
-    """Z-axis capsule enclosing the entire axis-aligned box, including corners."""
-    def __init__(self, center, half_extents, sectors=24, bands=18):
+    """Box-enclosing cylindrical envelope with selectable spherical top section."""
+    def __init__(self, center, half_extents, sectors=24, bands=18, top_cap_mode='hemisphere'):
         self.center = np.asarray(center, dtype=float)
         half = np.asarray(half_extents, dtype=float)
         if (self.center.shape != (3,) or half.shape != (3,)
@@ -80,8 +95,16 @@ class Capsule:
             raise ValueError('Expected finite center and positive box half extents')
         self.radius = float(np.linalg.norm(half[:2]))
         self.half_length = float(half[2])
+        if top_cap_mode not in ('hemisphere', 'centered_sphere'):
+            raise ValueError('Unknown top_cap_mode')
+        self.top_cap_mode = top_cap_mode
+        self.centered_top = top_cap_mode == 'centered_sphere'
+        self.top_sphere_radius = (float(np.linalg.norm(half)) if self.centered_top else self.radius)
+        self.top_angle = (np.arctan2(self.radius, self.half_length)
+                          if self.centered_top else np.pi/2)
         self.sectors, self.bands = sectors, bands
-        self.meridian_length = np.pi * self.radius + 2 * self.half_length
+        self.meridian_length = (np.pi*self.radius/2+2*self.half_length
+                                +self.top_sphere_radius*self.top_angle)
         # Centers of a periodic azimuth x meridian surface atlas.
         self.cells = self.surface((np.arange(bands) + .5) / bands,
                                   (np.arange(sectors) + .5) * 2 * np.pi / sectors)
@@ -100,6 +123,11 @@ class Capsule:
                      np.where(s > cap + 2 * self.half_length,
                               self.half_length + self.radius * np.sin(theta_hi),
                               -self.half_length + s - cap))
+        if self.centered_top:
+            top = s > cap+2*self.half_length
+            angle = self.top_angle-(s-cap-2*self.half_length)/self.top_sphere_radius
+            rho = np.where(top, self.top_sphere_radius*np.sin(angle), rho)
+            z = np.where(top, self.top_sphere_radius*np.cos(angle), z)
         a = np.asarray(angles)
         return (np.stack(np.broadcast_arrays(rho[:, None] * np.cos(a),
                                              rho[:, None] * np.sin(a), z[:, None]), axis=-1)
@@ -113,6 +141,8 @@ class Capsule:
 
     def distances(self, points, particle_radius=0.):
         p = np.asarray(points, dtype=float)
+        if self.centered_top:
+            return self._centered_top_distances(p, particle_radius)
         axis = np.broadcast_to(self.center, p.shape).copy()
         axis[:, 2] = np.clip(p[:, 2], self.center[2] - self.half_length,
                             self.center[2] + self.half_length)
@@ -122,6 +152,46 @@ class Capsule:
         normals[lengths < 1e-12] = [1., 0., 0.]  # deterministic subgradient on axis
         surface = axis + self.radius * normals
         return lengths - self.radius - particle_radius, normals, surface
+
+    def _centered_top_distances(self, points, particle_radius):
+        """Exact signed distance to the revolved, piecewise circular profile.
+
+        Top: sphere at box center, trimmed at the top-face plane. Sides and
+        bottom: original cylinder and lower hemisphere. The rim is a crease.
+        """
+        p = points-self.center
+        rho = np.linalg.norm(p[:, :2], axis=1)
+        z, r, h, radius = p[:, 2], self.radius, self.half_length, self.top_sphere_radius
+        radial = p[:, :2]/np.maximum(rho[:, None], 1e-12)
+        radial[rho < 1e-12] = [1., 0.]
+        length_bottom = np.hypot(rho, z+h)
+        bottom_r = np.where(z < -h, r*rho/np.maximum(length_bottom, 1e-12), r)
+        bottom_z = np.where(z < -h, -h+r*(z+h)/np.maximum(length_bottom, 1e-12), -h)
+        length_top = np.hypot(rho, z)
+        on_top_arc = z/np.maximum(length_top, 1e-12) >= h/radius
+        top_r = np.where(on_top_arc, radius*rho/np.maximum(length_top, 1e-12), r)
+        top_z = np.where(on_top_arc, radius*z/np.maximum(length_top, 1e-12), h)
+        candidates = np.stack((np.column_stack((bottom_r, bottom_z)),
+                               np.column_stack((np.full_like(z, r), np.clip(z, -h, h))),
+                               np.column_stack((top_r, top_z))), axis=1)
+        profile = np.column_stack((rho, z))
+        squared = np.sum((profile[:, None]-candidates)**2, axis=2)
+        chosen = np.argmin(squared, axis=1)
+        nearest = candidates[np.arange(len(p)), chosen]
+        distance = np.sqrt(np.min(squared, axis=1))
+        inside = ((rho <= r) & (z >= -h-np.sqrt(np.maximum(r*r-rho*rho, 0)))
+                  & (z <= np.sqrt(np.maximum(radius*radius-rho*rho, 0))))
+        sign = np.where(inside, -1., 1.)
+        normal2 = sign[:, None]*(profile-nearest)/np.maximum(distance[:, None], 1e-12)
+        # Surface points need the corresponding outward normal, not 0/0.
+        exact = distance < 1e-12
+        analytic = np.column_stack((np.ones_like(z), np.zeros_like(z)))
+        analytic[chosen == 0] = np.column_stack((nearest[:, 0]/r, (nearest[:, 1]+h)/r))[chosen == 0]
+        analytic[chosen == 2] = nearest[chosen == 2]/radius
+        normal2[exact] = analytic[exact]
+        normals = np.column_stack((normal2[:, :1]*radial, normal2[:, 1]))
+        surface = self.center+np.column_stack((nearest[:, :1]*radial, nearest[:, 1]))
+        return sign*distance-particle_radius, normals, surface
 
     def first_visible(self, cell, visible, horizon):
         b, a = divmod(cell, self.sectors)

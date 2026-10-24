@@ -95,6 +95,32 @@ class PredictiveTests(unittest.TestCase):
         self.assertEqual(debug['status'], 'prediction_not_safe')
         self.assertGreater(debug['max_violation'], .1)
 
+    def test_dynamics_interface_checks_clearance_and_strain_without_probes(self):
+        from capsule_cbf.cloth_state import ClothState
+        ctrl, points = self.setup_controller()
+        ctrl.settings.sensitivity_method = 'solver_tangent'
+        # Allow the synthetic strain repair in one trust-region step.
+        ctrl.settings.prediction_trust_displacement = .02
+        h = ctrl.barriers(points)
+        def rollout(u, leaders):
+            pred = np.tile(h, (2, 1))
+            pred[:, 0] = h[0]*np.exp(-2*np.arange(1, 3)/120)-.002+.02*u[0, 2]
+            pred[:, 4] = -.002+.05*u[1, 0]
+            return pred
+        def sensitivity(u, leaders):
+            jac = np.zeros((2, len(h), 6))
+            jac[:, 0, 2], jac[:, 4, 3] = .02, .05
+            return jac
+        rollout.sensitivity = sensitivity
+        for _ in range(2):
+            state = ClothState(points, np.zeros_like(points))
+            _, debug = ctrl.update(state, points, np.zeros((2, 3)), 1/60, rollout)
+            self.assertTrue(debug['state_velocity_available'])
+            self.assertEqual(debug['status'], 'feasible')
+            self.assertEqual(debug['rollout_count'], 2)
+            self.assertEqual(debug['sensitivity_modes'], ['solver_tangent'])
+            self.assertFalse(debug['sensitivity_reused'])
+
     def test_unsafe_intermediate_substep_rejected(self):
         ctrl, points = self.setup_controller()
         def rollout(u, leaders):
