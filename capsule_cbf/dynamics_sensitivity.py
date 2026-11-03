@@ -31,6 +31,11 @@ def stretch_force_jacobian(q, faces, rest, areas, stiffness):
     In particular its shear force uses NORMALIZED material directions. It is
     not replaced by a conventional unnormalized shear energy Hessian.
     """
+    return element_matrix(faces, stretch_force_blocks(q, faces, rest, areas, stiffness), len(q))
+
+
+def stretch_force_blocks(q, faces, rest, areas, stiffness):
+    """Per-triangle d f_i/d x_j blocks, shape (triangle, i, j, xyz, xyz)."""
     coeff = np.concatenate((-rest.sum(axis=1)[:, None, :], rest), axis=1)
     fu = np.einsum('tix,ti->tx', q[faces], coeff[:, :, 0])
     fv = np.einsum('tix,ti->tx', q[faces], coeff[:, :, 1])
@@ -58,7 +63,7 @@ def stretch_force_jacobian(q, faces, rest, areas, stiffness):
                 (stiffness[:, 0]*ai*aj)[:, None, None]*tu
                 +(stiffness[:, 1]*bi*bj)[:, None, None]*tv
                 +stiffness[:, 2, None, None]*shear)
-    return element_matrix(faces, blocks, len(q))
+    return blocks
 
 
 class ClothDynamicsSensitivity:

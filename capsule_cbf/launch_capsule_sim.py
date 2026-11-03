@@ -40,9 +40,11 @@ def main():
     with tempfile.TemporaryDirectory(prefix='fabric-capsule-') as directory:
         config_path = Path(directory)/'capsule_sim.yaml'
         config_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
+        # One BLAS thread: the filter's tiny LAPACK calls stall on thread hand-off.
+        env = {**os.environ, 'OPENBLAS_NUM_THREADS': os.environ.get('OPENBLAS_NUM_THREADS', '1')}
         try:
             result = subprocess.run(['bash', str(root/'fabric_sim_bringup/scripts/launch_full_sim.sh'),
-                                     str(config_path)], check=False)
+                                     str(config_path)], check=False, env=env)
         except KeyboardInterrupt:
             return
         raise SystemExit(result.returncode)

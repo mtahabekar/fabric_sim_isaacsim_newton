@@ -1,0 +1,66 @@
+{
+  "descend/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.015214299297350534,
+    "min_distance": 0.06521429929735054,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 14.662007461151768,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.01925281996657424,
+    "max_command_accel": 3.000000000000001,
+    "mean_correction": 0.14583706749769368,
+    "control_ms_p50": 15.109093499631854,
+    "control_ms_p95": 15.934232598738163,
+    "control_ms_max": 16.56698700026027,
+    "physics_ms_p50": 24.3034519990033,
+    "statuses": {
+      "feasible": 98,
+      "relaxed_soft": 51,
+      "relaxed_hard": 111
+    }
+  },
+  "descend_pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.020488624184559365,
+    "min_distance": 0.07048862418455937,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 17.409182182535897,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.01794130626883783,
+    "max_command_accel": 3.000000000000001,
+    "mean_correction": 0.1936595493408746,
+    "control_ms_p50": 15.046795499074506,
+    "control_ms_p95": 15.86758240027848,
+    "control_ms_max": 16.552675999264466,
+    "physics_ms_p50": 24.3022894992464,
+    "statuses": {
+      "feasible": 97,
+      "relaxed_soft": 49,
+      "relaxed_hard": 114
+    }
+  },
+  "pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.2512089812734778,
+    "min_distance": 0.3012089812734778,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 19.944984317570977,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.01952498499373867,
+    "max_command_accel": 0.37717647439333496,
+    "mean_correction": 0.06604747932780576,
+    "control_ms_p50": 12.455187999876216,
+    "control_ms_p95": 12.931380951704341,
+    "control_ms_max": 13.375067002925789,
+    "physics_ms_p50": 24.277247501231614,
+    "statuses": {
+      "feasible": 260
+    }
+  }
+}

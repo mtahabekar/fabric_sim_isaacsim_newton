@@ -1,0 +1,66 @@
+{
+  "descend/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.04954695047183656,
+    "min_distance": 0.09954695047183656,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 14.656267372924562,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.018246237531149845,
+    "max_command_accel": 3.000000000000001,
+    "mean_correction": 0.18627163788657106,
+    "control_ms_p50": 14.932847499949276,
+    "control_ms_p95": 16.002968949851493,
+    "control_ms_max": 17.34866900005727,
+    "physics_ms_p50": 24.278668499391642,
+    "statuses": {
+      "feasible": 98,
+      "relaxed_soft": 46,
+      "relaxed_hard": 116
+    }
+  },
+  "descend_pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.012636558886432461,
+    "min_distance": 0.06263655888643246,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 17.424497500553223,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.023915413103521743,
+    "max_command_accel": 3.000000000000001,
+    "mean_correction": 0.2202285891318596,
+    "control_ms_p50": 15.062727999975323,
+    "control_ms_p95": 15.858007049428124,
+    "control_ms_max": 16.282979000607156,
+    "physics_ms_p50": 24.296994999531307,
+    "statuses": {
+      "feasible": 97,
+      "relaxed_soft": 46,
+      "relaxed_hard": 117
+    }
+  },
+  "pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.25137808728323524,
+    "min_distance": 0.30137808728323523,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 19.93405278475175,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.019469902738831646,
+    "max_command_accel": 0.37722630672753266,
+    "mean_correction": 0.06604948460063072,
+    "control_ms_p50": 12.353374499070924,
+    "control_ms_p95": 12.860213698786538,
+    "control_ms_max": 13.80570000037551,
+    "physics_ms_p50": 24.261401500552893,
+    "statuses": {
+      "feasible": 260
+    }
+  }
+}

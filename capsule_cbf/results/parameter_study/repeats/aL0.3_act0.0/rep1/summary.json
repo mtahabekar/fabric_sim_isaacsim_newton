@@ -1,0 +1,64 @@
+{
+  "descend/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.0001448108223566294,
+    "min_distance": 0.05014481082235663,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 17.705743703373074,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.013599014775398599,
+    "max_command_accel": 3.0,
+    "mean_correction": 0.04928462742821911,
+    "control_ms_p50": 12.330530500548775,
+    "control_ms_p95": 14.990077701349946,
+    "control_ms_max": 15.436057999977493,
+    "physics_ms_p50": 24.26602749983431,
+    "statuses": {
+      "feasible": 217,
+      "relaxed_soft": 43
+    }
+  },
+  "descend_pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.00029497052726680517,
+    "min_distance": 0.05029497052726681,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 20.54949940420151,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 2,
+    "max_tensile_strain": 0.015438517227233106,
+    "max_command_accel": 3.0,
+    "mean_correction": 0.08442165401996059,
+    "control_ms_p50": 12.49113649919309,
+    "control_ms_p95": 15.25531434908771,
+    "control_ms_max": 15.718127999207354,
+    "physics_ms_p50": 24.310921999131097,
+    "statuses": {
+      "feasible": 202,
+      "relaxed_soft": 58
+    }
+  },
+  "pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.25117416008232946,
+    "min_distance": 0.30117416008232945,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 19.94746693397014,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.019528333142758036,
+    "max_command_accel": 0.3767793710352619,
+    "mean_correction": 0.06604739637724853,
+    "control_ms_p50": 12.365398499241564,
+    "control_ms_p95": 12.717892600448977,
+    "control_ms_max": 13.211348999902839,
+    "physics_ms_p50": 24.254378000478027,
+    "statuses": {
+      "feasible": 260
+    }
+  }
+}

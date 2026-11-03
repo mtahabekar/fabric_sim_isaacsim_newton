@@ -1,0 +1,64 @@
+{
+  "descend/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.0012932673620383098,
+    "min_distance": 0.05129326736203831,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 14.96830740944166,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.009198087888685702,
+    "max_command_accel": 3.0000000000000004,
+    "mean_correction": 0.055925889695765243,
+    "control_ms_p50": 12.758504499288392,
+    "control_ms_p95": 15.578266601005453,
+    "control_ms_max": 15.823091001948342,
+    "physics_ms_p50": 283.3217549996334,
+    "statuses": {
+      "feasible": 208,
+      "relaxed_soft": 52
+    }
+  },
+  "descend_pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.0020012295574064476,
+    "min_distance": 0.05200122955740645,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 18.386482948864618,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.015227542575047437,
+    "max_command_accel": 3.0,
+    "mean_correction": 0.09054323048877065,
+    "control_ms_p50": 12.816271999327,
+    "control_ms_p95": 16.00466139971104,
+    "control_ms_max": 16.347820001101354,
+    "physics_ms_p50": 283.64459450313007,
+    "statuses": {
+      "feasible": 199,
+      "relaxed_soft": 61
+    }
+  },
+  "pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.25141190708640926,
+    "min_distance": 0.30141190708640925,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 19.971842829646206,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.01944759562173548,
+    "max_command_accel": 0.28985626509703594,
+    "mean_correction": 0.06605476148655637,
+    "control_ms_p50": 12.715720999040059,
+    "control_ms_p95": 13.263113702851113,
+    "control_ms_max": 14.587330999347614,
+    "physics_ms_p50": 283.50988249985676,
+    "statuses": {
+      "feasible": 260
+    }
+  }
+}

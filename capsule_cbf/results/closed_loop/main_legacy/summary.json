@@ -1,0 +1,23 @@
+{
+  "descend/ray_basins": {
+    "frames": 260,
+    "min_barrier": -0.0054188731747716185,
+    "min_distance": 0.044581126825228384,
+    "frames_barrier_violated": 43,
+    "frames_surface_penetrated": 0,
+    "max_tension": 242.88308235352554,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 97,
+    "max_tensile_strain": 0.16883441530294818,
+    "max_command_accel": 61.48788990312332,
+    "mean_correction": 0.047487285925234386,
+    "control_ms_p50": 2.1515344988074503,
+    "control_ms_p95": 151.77079329896515,
+    "control_ms_max": 363.33278399979463,
+    "physics_ms_p50": 24.330191999979434,
+    "statuses": {
+      "feasible": 250,
+      "prediction_not_safe": 10
+    }
+  }
+}

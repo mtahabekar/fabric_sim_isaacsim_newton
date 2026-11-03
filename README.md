@@ -7,10 +7,13 @@ uses an external control barrier function (CBF) node to filter follower
 velocity commands before they are applied back in the simulator.
 
 The separate capsule CBF experiment runs with
-`python3 capsule_cbf/launch_capsule_sim.py`. It now uses a 289-particle GPU
-prediction model while live physics and rendering retain the 3,249-particle
-cloth. See [coarse prediction configuration and validation](capsule_cbf/COARSE_PREDICTION.md)
-and [capsule launch instructions](capsule_cbf/README.md).
+`python3 capsule_cbf/launch_capsule_sim.py`. Its default filter is now the
+real-time sensitivity CBF: a linearized 289-particle model with exact command
+sensitivities, combined capsule clearance, gripper tension and fabric strain
+limits, solved as one small QP per frame. Live physics and rendering retain the
+3,249-particle cloth. See the [sensitivity CBF report](capsule_cbf/SENSITIVITY_CBF_REPORT.md)
+and [capsule launch instructions](capsule_cbf/README.md); the earlier
+[coarse Newton predictor](capsule_cbf/COARSE_PREDICTION.md) remains selectable.
 The [mathematical progress report](capsule_cbf/PROGRESS_REPORT.md) summarizes the
 development, equations, measured results, limitations, and primary references
 for research discussion or a professor-facing presentation.

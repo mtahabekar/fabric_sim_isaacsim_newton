@@ -1,0 +1,64 @@
+{
+  "descend/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.000139419408251705,
+    "min_distance": 0.05013941940825171,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 17.74808308790633,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.01361974597825899,
+    "max_command_accel": 3.0000000000000004,
+    "mean_correction": 0.04928034038805937,
+    "control_ms_p50": 12.442345498129725,
+    "control_ms_p95": 14.95354904945998,
+    "control_ms_max": 15.233755999361165,
+    "physics_ms_p50": 24.277606498799287,
+    "statuses": {
+      "feasible": 217,
+      "relaxed_soft": 43
+    }
+  },
+  "descend_pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.0002910521781946257,
+    "min_distance": 0.05029105217819463,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 20.554830975580355,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 2,
+    "max_tensile_strain": 0.015442744010903064,
+    "max_command_accel": 3.0000000000000004,
+    "mean_correction": 0.08442036656042752,
+    "control_ms_p50": 12.504090500442544,
+    "control_ms_p95": 15.479895299176858,
+    "control_ms_max": 17.449263999878895,
+    "physics_ms_p50": 24.31255600095028,
+    "statuses": {
+      "feasible": 202,
+      "relaxed_soft": 58
+    }
+  },
+  "pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.25125141807006707,
+    "min_distance": 0.30125141807006706,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 19.935221904101212,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.019520369996701037,
+    "max_command_accel": 0.3766682742931151,
+    "mean_correction": 0.06604843953693981,
+    "control_ms_p50": 12.41679750091862,
+    "control_ms_p95": 14.09457544923498,
+    "control_ms_max": 18.64495300105773,
+    "physics_ms_p50": 24.26326300155779,
+    "statuses": {
+      "feasible": 260
+    }
+  }
+}

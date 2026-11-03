@@ -1,0 +1,117 @@
+{
+  "status": "feasible",
+  "mode": "sensitivity_cbf",
+  "state_velocity_available": true,
+  "min_clearance": 0.5121329664628012,
+  "h_min": 0.46213296646280116,
+  "initially_safe": true,
+  "candidate_count": 0,
+  "total_rows": 80,
+  "generated_rows": 80,
+  "predicted_min_clearance_barrier": Infinity,
+  "horizon_min_clearance_barrier": 0.46213296646280116,
+  "max_violation": 0.0,
+  "slack_soft": 0.0,
+  "slack_hard": 0.0,
+  "worst_row_residual": {
+    "strain": -2.0286983516142887,
+    "tension": -1.9129485648173272
+  },
+  "correction": 0.0,
+  "tension": [
+    4.674588644496227,
+    4.584415128641533,
+    4.584416560683314,
+    4.675162792516367
+  ],
+  "strain_ks": [
+    0.18738274595167298,
+    0.18692178376237895,
+    0.18692213995893403,
+    0.1873939385153255
+  ],
+  "bias_norm": 0.11876938133819619,
+  "conformal": {
+    "clearance": [
+      0.002,
+      0.002,
+      0.002,
+      0.002,
+      0.002,
+      0.002,
+      0.002,
+      0.002,
+      0.002,
+      0.002
+    ],
+    "tension": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "strain": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "controller_ms": 16.17409100072109,
+  "measure_ms": 2.856158000213327,
+  "linearize_ms": 3.9993030004552566,
+  "predict_ms": 4.915061999781756,
+  "rows_ms": 4.0423609971185215,
+  "qp_ms": 0.05673099803971127,
+  "follower_velocity": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "nominal_velocity": [
+    [
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0
+    ]
+  ],
+  "safety_scope": "Linearized coarse prediction with conformal tightening; not a certificate of whole-mesh safety",
+  "prediction_model": "coarse",
+  "live_particles": 3249,
+  "prediction_particles": 289,
+  "prediction_triangles": 512,
+  "prediction_grid_shape": [
+    16,
+    16
+  ],
+  "model_substeps": 1,
+  "stride": 2,
+  "jacobian": "affine",
+  "run_min_clearance": 0.5119801401535978,
+  "recovery_frames": 0,
+  "run_max_correction": 0.0
+}

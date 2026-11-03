@@ -1,6 +1,32 @@
 # Capsule interaction CBF experiment
 
-The default controller is a **Newton predictor with ray-selected basins**.
+## Current default: sensitivity CBF (`controller: "sensitivity"`)
+
+The default filter no longer runs Newton rollouts inside the control loop. Each
+frame it linearizes a 17x17 coarse cloth once (PSD-projected Style3D stiffness,
+banded Cholesky) and predicts 0.33 s ahead together with the exact sensitivity
+of every predicted point to the six follower velocity components. A small exact
+QP then enforces, at every predicted time:
+
+- capsule clearance at rest-mesh local minima whose predicted clearance reaches
+  the 5 cm margin within the horizon, plus a terminal look-ahead row;
+- gripper tension (`tension_limit`, N) and KS-aggregated weft/warp/shear strain
+  in a band around each gripper;
+- follower speed (`max_speed`) and acceleration (`follower_max_accel`) limits.
+
+Margins are tightened online by conformal quantiles of measured prediction
+residuals. Stretch limits take priority over clearance when both cannot hold.
+The cloth now uses `areal_density: 0.2` kg/m^2; the former 0.003 kg/particle was
+13.8 kg/m^2 and already exceeded the stretch limits at rest. Typical update
+time is about 13-16 ms on the CPU, versus about 178 ms for the legacy filter.
+
+Read [SENSITIVITY_CBF_REPORT.md](SENSITIVITY_CBF_REPORT.md) for the formulation,
+sources, every validation step, results and limitations. Set
+`"controller": "ray_basins"` to run the legacy filter described below.
+
+## Legacy ray-basin predictor
+
+The previous default controller was a **Newton predictor with ray-selected basins**.
 CBF prediction now uses a separate **289-particle coarse cloth** by default;
 live physics, rendering and current obstacle detection retain all **3,249
 particles**. Positions and velocities are refreshed from the live state every

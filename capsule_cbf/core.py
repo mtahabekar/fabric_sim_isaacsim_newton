@@ -47,13 +47,65 @@ class Settings:
     prediction_trust_displacement: float = 0.005  # per-axis change per iteration
     clearance_tightening: float = 0.0001
     strain_tightening: float = 0.00001
+    # Sensitivity CBF (SENSITIVITY_CBF_REPORT.md). 'ray_basins', 'predictive'
+    # and 'bilinear' select the legacy controllers for comparison.
+    controller: str = 'sensitivity'
+    areal_density: float = 0.0  # kg/m^2; zero keeps the simulator's mass argument
+    horizon_frames: int = 20  # plant frames covered by the prediction
+    horizon_stride: int = 2  # plant frames per prediction output
+    model_substeps: int = 1
+    model_jacobian: str = 'affine'
+    # Clearance rows for points whose PREDICTED barrier over the horizon falls
+    # to this value. The horizon already looks ahead; a spatial band on top
+    # (e.g. `activation`) made the filter over-react (report, section 10.3).
+    prediction_activation: float = 0.0
+    candidate_rings: int = 3  # rest-mesh rings defining a local clearance minimum
+    max_candidates: int = 12
+    terminal_lookahead: float = 0.15  # s; terminal row h + tau dh/dt >= 0
+    follower_max_accel: float = 3.0  # m/s^2 per axis; zero disables the rate box
+    command_smoothing: float = 0.25
+    leader_max_accel: float = 0.3  # m/s^2 per axis, robust tightening
+    tension_limit: float = 20.0  # N per gripper; zero disables
+    stretch_alpha: float = 4.0
+    strain_band_radius: float = 0.06  # m around each gripper corner, rest frame
+    ks_kappa: float = 40.0
+    conformal_quantile: float = 0.95
+    conformal_window: int = 600
+    initial_clearance_margin: float = 0.002  # m, before residual data exist
+    initial_tension_margin: float = 0.5  # N
+    initial_strain_margin: float = 0.05  # fraction of the strain limit
+    observer_gain: float = 0.3
+    warmup_frames: int = 90  # spawned flat cloth is slack; filter starts once it hangs
 
     def __post_init__(self):
         if (not isinstance(self.prediction_grid_cells, int) or isinstance(self.prediction_grid_cells, bool)
                 or self.prediction_grid_cells < 0 or self.prediction_grid_cells == 1):
             raise ValueError('prediction_grid_cells must be 0 or an integer >= 2')
-        if self.prediction_grid_cells and (not self.ray_basins_enabled or self.strain_enabled):
+        if self.controller not in ('sensitivity', 'ray_basins', 'predictive', 'bilinear'):
+            raise ValueError('Unknown controller')
+        if self.model_jacobian not in ('affine', 'trajectory', 'frozen'):
+            raise ValueError('Unknown model_jacobian')
+        if (self.controller == 'ray_basins' and self.prediction_grid_cells
+                and (not self.ray_basins_enabled or self.strain_enabled)):
             raise ValueError('Coarse prediction currently requires ray basins with strain disabled')
+        for name in ('horizon_frames', 'horizon_stride', 'model_substeps', 'candidate_rings',
+                     'max_candidates', 'conformal_window'):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(f'{name} must be a positive integer')
+        if not isinstance(self.warmup_frames, int) or self.warmup_frames < 0:
+            raise ValueError('warmup_frames must be a nonnegative integer')
+        if self.horizon_frames % self.horizon_stride:
+            raise ValueError('horizon_frames must be a multiple of horizon_stride')
+        for name in ('areal_density', 'prediction_activation', 'terminal_lookahead', 'follower_max_accel', 'command_smoothing',
+                     'leader_max_accel', 'tension_limit', 'stretch_alpha', 'strain_band_radius',
+                     'ks_kappa', 'initial_clearance_margin', 'initial_tension_margin',
+                     'initial_strain_margin', 'observer_gain'):
+            value = getattr(self, name)
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f'Invalid {name}')
+        if not 0 < self.conformal_quantile < 1 or self.ks_kappa == 0:
+            raise ValueError('conformal_quantile must lie in (0, 1); ks_kappa positive')
         if self.sensitivity_backend not in ('warp', 'cpu'):
             raise ValueError('Unknown sensitivity_backend')
         if self.top_cap_mode not in ('hemisphere', 'centered_sphere'):

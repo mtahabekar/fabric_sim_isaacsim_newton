@@ -1,0 +1,44 @@
+{
+  "descend/sensitivity": {
+    "frames": 260,
+    "min_barrier": 0.00014361667357593727,
+    "min_distance": 0.05014361667357594,
+    "frames_barrier_violated": 0,
+    "frames_surface_penetrated": 0,
+    "max_tension": 17.68197367347479,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 0,
+    "max_tensile_strain": 0.013582971814749989,
+    "max_command_accel": 3.0,
+    "mean_correction": 0.04897145004273005,
+    "control_ms_p50": 12.733271499200782,
+    "control_ms_p95": 15.58045400042829,
+    "control_ms_max": 17.65311000053771,
+    "physics_ms_p50": 24.28511299967795,
+    "statuses": {
+      "feasible": 220,
+      "relaxed_soft": 40
+    }
+  },
+  "descend_pull/sensitivity": {
+    "frames": 260,
+    "min_barrier": -0.00016621513275690003,
+    "min_distance": 0.0498337848672431,
+    "frames_barrier_violated": 5,
+    "frames_surface_penetrated": 0,
+    "max_tension": 20.515453857643276,
+    "tension_limit": 20.0,
+    "frames_tension_violated": 2,
+    "max_tensile_strain": 0.01518217523987997,
+    "max_command_accel": 3.0000000000000004,
+    "mean_correction": 0.08318491258861904,
+    "control_ms_p50": 12.558381000417285,
+    "control_ms_p95": 15.214648149503773,
+    "control_ms_max": 16.896856999665033,
+    "physics_ms_p50": 24.31346499997744,
+    "statuses": {
+      "feasible": 227,
+      "relaxed_soft": 33
+    }
+  }
+}

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Synchronous capsule CBF with configurable coarse or full Newton prediction."""
+"""Synchronous capsule CBF: sensitivity CBF (default) or legacy Newton prediction."""
+import os
+# Must precede NumPy: the filter's small LAPACK calls stall on OpenBLAS
+# thread hand-off (p95 140 ms with 24 threads, 3 ms with one).
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
 import argparse
 import json
 import sys
@@ -37,6 +41,12 @@ from capsule_cbf.ray_basins import RayBasinController
 from capsule_cbf.newton_runtime import CapsuleRayDetector
 from capsule_cbf.strain import TriangleStrain
 from capsule_cbf.material_audit import audit_style3d
+from capsule_cbf.cloth_state import ClothState
+from capsule_cbf.reduced_cloth import ReducedCloth
+from capsule_cbf.sensitivity_cbf import SensitivityCbfController
+
+DEBUG_ARRAYS = ('surfaces', 'rows', 'rhs', 'detected_indices', 'basin_indices', 'detected_points',
+                'basin_points', 'candidate_indices')
 
 
 class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStandalone):
@@ -45,6 +55,13 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
         # The capsule filter owns optional speed bounds; do not inherit a
         # separate cap from the legacy simulator arguments.
         args.follower_command_max_speed = settings.max_speed
+        if settings.areal_density > 0:
+            # Style3D spreads mass_per_particle uniformly by area; set it from
+            # a fabric areal density (0.1-0.4 kg/m^2 for woven cloth).
+            area = args.grid_x*args.cell_x*args.grid_y*args.cell_y
+            args.mass_per_particle = settings.areal_density*area/((args.grid_x+1)*(args.grid_y+1))
+            print(f'[capsule CBF] areal density {settings.areal_density} kg/m^2 -> '
+                  f'mass_per_particle={args.mass_per_particle:.3e} kg')
         super().__init__(args)
         capsule = Capsule([0., 0., args.table_hz], self.table_half_extents,
                           settings.sectors, settings.bands, settings.top_cap_mode)
@@ -57,7 +74,20 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
             self.capsule_controller.weights[local] = np.eye(4)[corner]
         self.predictor = None
         self.predicted_points = None
-        if settings.predictive_enabled:
+        self.sensitivity_controller = None
+        if settings.controller == 'sensitivity':
+            reduced = ReducedCloth(
+                self.model, self.gripper_flat_indices, self.gripper_flat_corner_ids,
+                self.gripper_flat_offsets, self.frame_dt, particle_start=self.cloth_particle_start,
+                particle_count=self.cloth_particle_end-self.cloth_particle_start,
+                particle_radius=self.cloth_particle_radius, cells=settings.prediction_grid_cells,
+                substeps=settings.model_substeps, stride=settings.horizon_stride,
+                plant_substeps=self.sim_substeps, jacobian=settings.model_jacobian)
+            self.sensitivity_controller = SensitivityCbfController(
+                capsule, reduced, self.initial_corner_positions, self.cloth_particle_radius,
+                settings, self.frame_dt)
+            print('[capsule CBF] sensitivity CBF:', reduced.info)
+        elif settings.controller in ('ray_basins', 'predictive') and settings.predictive_enabled:
             triangles = self.model.tri_indices.numpy()-self.cloth_particle_start
             strain = TriangleStrain(triangles, self.model.tri_poses.numpy(),
                                     settings.weft_strain_limit, settings.warp_strain_limit,
@@ -76,7 +106,7 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
             self.predictor.progress_callback = legacy.simulation_app.update
             print('[capsule CBF] prediction resolution:', getattr(self.predictor, 'resolution_info',
                   {'prediction_model': 'full', 'prediction_particles': self.model.particle_count}))
-            if settings.ray_basins_enabled:
+            if settings.controller == 'ray_basins' and settings.ray_basins_enabled:
                 detector = CapsuleRayDetector(self.model, self.state_0, capsule)
                 self.predictive_controller = RayBasinController(
                     capsule, strain, self.initial_corner_positions, self.cloth_particle_radius,
@@ -102,10 +132,9 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
         self._capsule_points('Detections', [], (1., .65, .05), .012)
         self._capsule_points('BasinSeeds', [], (1., .1, .2), .018)
         self._capsule_lines('DistanceSegments', [], (1., .65, .05), .002)
-        print(f'[capsule CBF] synchronous filter; radius={capsule.radius:.4f} m, '
-              f'cells={len(capsule.cells)}, predictive={settings.predictive_enabled}, '
-              f'ray_basins={settings.ray_basins_enabled}, strain={settings.strain_enabled}, '
-              f'sensitivity={settings.sensitivity_method}/{settings.sensitivity_backend}')
+        print(f'[capsule CBF] synchronous filter; controller={settings.controller}, '
+              f'radius={capsule.radius:.4f} m, cells={len(capsule.cells)}, '
+              f'strain={settings.strain_enabled}, tension_limit={settings.tension_limit} N')
         print(f'[capsule CBF] top={capsule.top_cap_mode}, '
               f'top sphere radius={capsule.top_sphere_radius:.4f} m')
 
@@ -129,7 +158,21 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
         return prim
 
     def _compute_follower_applied_velocities(self, leader_cmd_vels):
-        if self.predictor is None:
+        if self.sensitivity_controller is not None and self._frame_index < settings.warmup_frames:
+            # The spawned flat sheet is slack; the affine model is linearized
+            # about hanging, tensioned cloth (SENSITIVITY_CBF_REPORT.md, step 3).
+            points = self.get_cloth_particles()
+            command = np.asarray(leader_cmd_vels, dtype=float).reshape(2, 3).copy()
+            debug = dict(status='warmup', mode='sensitivity_cbf', min_clearance=float(
+                self.capsule_controller.capsule.distances(points, self.cloth_particle_radius)[0].min()),
+                correction=0., detected_indices=[], basin_indices=[], surfaces=np.empty((0, 3)))
+        elif self.sensitivity_controller is not None:
+            cloth_state = ClothState.from_newton(self.state_0, self.cloth_particle_start,
+                                                 self.cloth_particle_end-self.cloth_particle_start)
+            points = cloth_state.positions
+            command, debug = self.sensitivity_controller.update(
+                cloth_state, self._get_actual_corner_positions(), leader_cmd_vels, self.frame_dt)
+        elif self.predictor is None:
             points = self.get_cloth_particles()
             command, debug = self.capsule_controller.update(
                 points, self._get_actual_corner_positions(), leader_cmd_vels, self.frame_dt)
@@ -156,21 +199,22 @@ class CapsuleFabricSimulation(CurrentNewtonModelMixin, legacy.Style3DIsaacStanda
             debug.update(getattr(self.predictor, 'resolution_info', {'prediction_model': 'full'}))
         self.capsule_debug = debug
         self.smoke_min_clearance = min(self.smoke_min_clearance, debug['min_clearance'])
-        self.smoke_recovery_frames += int(debug['status'] != 'feasible')
+        self.smoke_recovery_frames += int(debug['status'] not in ('feasible', 'warmup'))
         self.smoke_max_correction = max(self.smoke_max_correction, debug['correction'])
         self.last_applied_follower_vels = command.astype(np.float32)
-        detected = debug.get('detected_points', points[debug['detected_indices']])
-        basins = debug.get('basin_points', points[debug['basin_indices']])
-        self._capsule_points('Detections', detected, (1., .65, .05), .012)
-        self._capsule_points('BasinSeeds', basins, (1., .1, .2), .018)
-        lines = [np.stack((surface, p))
-                 for surface, p in zip(debug['surfaces'], detected)]
-        self._capsule_lines('DistanceSegments', lines, (1., .65, .05), .002)
+        # USD edits force a stage sync; 5 Hz is enough for debug geometry.
+        if self._frame_index % 12 == 0:
+            detected = debug.get('detected_points', points[debug['detected_indices']])
+            basins = debug.get('basin_points', points[debug['basin_indices']])
+            self._capsule_points('Detections', detected, (1., .65, .05), .012)
+            self._capsule_points('BasinSeeds', basins, (1., .1, .2), .018)
+            lines = [np.stack((surface, p))
+                     for surface, p in zip(debug['surfaces'], detected)]
+            self._capsule_lines('DistanceSegments', lines, (1., .65, .05), .002)
         if self.ros is not None:
             if self.capsule_debug_pub is None:
                 self.capsule_debug_pub = self.ros.node.create_publisher(String, '/fabric/capsule_cbf/debug', 10)
-            report = {k: v for k, v in debug.items()
-                      if k not in ('surfaces', 'rows', 'rhs', 'detected_indices', 'basin_indices', 'detected_points', 'basin_points')}
+            report = {k: v for k, v in debug.items() if k not in DEBUG_ARRAYS}
             msg = String()
             msg.data = json.dumps(report)
             self.capsule_debug_pub.publish(msg)
@@ -202,8 +246,7 @@ if __name__ == '__main__':
                     output = options.capsule_smoke_output
                     output.mkdir(parents=True, exist_ok=True)
                     sim.stage.Export(str(output/'capsule_scene.usda'))
-                    report = {k: v for k, v in sim.capsule_debug.items()
-                              if k not in ('surfaces', 'rows', 'rhs', 'detected_points', 'basin_points')}
+                    report = {k: v for k, v in sim.capsule_debug.items() if k not in DEBUG_ARRAYS}
                     report.update(run_min_clearance=sim.smoke_min_clearance,
                                   recovery_frames=sim.smoke_recovery_frames,
                                   run_max_correction=sim.smoke_max_correction)
