@@ -11,9 +11,15 @@ import time
 import numpy as np
 import warp as wp
 from capsule_cbf.cloth_model import ClothMechanics
-from capsule_cbf.core import material_weights
 from capsule_cbf.reduced_cloth import ReducedCloth
 from capsule_cbf.scenario import FRAME_DT, build_plant
+
+
+def material_weights(points):
+    """Rest-XY bilinear corner weights (FL, FR, LL, LR): the pre-redesign rigid influence model."""
+    xy = np.asarray(points)[:, :2]
+    x, y = ((xy-xy.min(axis=0))/np.ptp(xy, axis=0)).T
+    return np.column_stack(((1-x)*(1-y), x*(1-y), (1-x)*y, x*y))
 
 
 def rollout(plant, followers, leaders, frames):

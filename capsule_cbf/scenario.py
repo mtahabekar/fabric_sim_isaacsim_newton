@@ -1,15 +1,16 @@
-"""Headless Newton plant fixture shared by validation and benchmark scripts.
+"""Headless Newton plant (no Isaac, no ROS) shared by the benchmark, validation and tests.
 
-Geometry, material and solver defaults equal the capsule launch configuration
-(56x56 cells of 1.5 cm, 0.44x0.44x0.32 m table, 8 substeps, 10 PD and 16 PCG
-iterations). Corners: 0/1 followers (y=-0.42), 2/3 leaders (y=+0.42).
+Geometry, material and solver defaults equal the Isaac configuration
+(fabric_sim_bringup/config/full_sim.yaml: 56x56 cells of 1.5 cm, 0.2 kg/m^2,
+0.44x0.44x0.32 m table, 8 substeps, 10 PD and 16 PCG iterations).
+Corners: 0/1 followers (y=-0.42), 2/3 leaders (y=+0.42).
 """
 from dataclasses import dataclass
 import numpy as np
 import warp as wp
 import newton
 from newton.solvers import style3d
-from .core import Capsule
+from .capsule import Capsule
 from .newton_runtime import ClothRuntime
 
 FRAME_DT = 1/60

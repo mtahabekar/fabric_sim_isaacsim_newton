@@ -1,38 +1,27 @@
-# One-file configuration for the full IsaacSim + ROS 2 fabric CBF stack.
+# One-file configuration for the Isaac Sim fabric simulation with the
+# sensitivity CBF filtering the two follower grippers.
 #
-# Edit this file, rebuild the bringup package if you are not using
-# --symlink-install, then run:
-#   ros2 launch fabric_sim_bringup full_sim.launch.py
+#   ros2 launch fabric_sim_bringup full_sim.launch.py [headless:=true] [dry_run:=true]
+#
+# Relative paths are resolved against the repository root (the directory that
+# contains fabric_newton_isaacsim.py). With `colcon build --symlink-install`,
+# edits to this file take effect without rebuilding.
 
 launch:
   start_isaac: true
-  start_obstacle_distance: true
-  start_cbf_controller: true
   start_teleop: true
-
-  # Isaac can take a moment before ROS topics appear. Increase these if the
-  # ROS nodes start before the simulator is ready on your machine.
-  obstacle_start_delay: 15.0
-  cbf_start_delay: 17.0
-  teleop_start_delay: 19.0
-
-  # Stop the whole launch when the IsaacSim process exits.
-  shutdown_on_isaac_exit: true
-
-shared:
-  ros_frame_id: &ros_frame_id world
-  table_hx: &table_hx 0.22
-  table_hy: &table_hy 0.22
-  table_hz: &table_hz 0.16
-  particle_radius: &particle_radius 0.008
+  teleop_start_delay: 0.0      # s
+  shutdown_on_isaac_exit: true # stop teleop when the simulator window closes
 
 isaac_sim:
-  working_directory: /home/taha/isaacsim6_new/IsaacSim/_build/linux-x86_64/release
-  python_sh: /home/taha/isaacsim6_new/IsaacSim/_build/linux-x86_64/release/python.sh
-  script: /home/taha/ros2_colcon_ws/src/fabric_sim_isaacsim_newton/fabric_newton_isaacsim_standalone.py
+  # Isaac Sim's python.sh. The ISAAC_PYTHON_SH environment variable and the
+  # isaac_python launch argument override it. working_directory defaults to
+  # the directory of python.sh.
+  python_sh: /media/taha/ExtermeLinux/isaacsim/python.sh
+  script: fabric_newton_isaacsim.py
 
-  # These keys map directly to the simulator CLI arguments. For example,
-  # external_cbf_enabled becomes --external-cbf-enabled.
+  # Simulator flags (`python.sh fabric_newton_isaacsim.py --help`):
+  # cloth_start_z -> --cloth-start-z 1.05; true/false keys are switches.
   arguments:
     grid_x: 56
     grid_y: 56
@@ -40,12 +29,12 @@ isaac_sim:
     cell_y: 0.015
     cloth_center_x: 0.0
     cloth_center_y: 0.0
-    cloth_start_z: 0.72
-    mass_per_particle: 0.003
-    particle_radius: *particle_radius
-    table_hx: *table_hx
-    table_hy: *table_hy
-    table_hz: *table_hz
+    cloth_start_z: 1.05        # room for start-up sag above the capsule envelope
+    areal_density: 0.2         # kg/m^2
+    particle_radius: 0.008
+    table_hx: 0.22             # the CBF capsule is built from these half extents
+    table_hy: 0.22
+    table_hz: 0.16
     gripper_size: 3
     substeps: 8
     iterations: 10
@@ -65,75 +54,22 @@ isaac_sim:
     contact_ke: 4000.0
     contact_kd: 0.01
     contact_mu: 2.0
-    ros_frame_id: *ros_frame_id
+    ros_frame_id: world
     cmd_timeout: 1.0
-    follower_command_max_speed: 0.0
     disable_cuda_graph: false
-    external_cbf_enabled: true
-    cbf_command_timeout: 0.10
-    cbf_stale_policy: nominal
+    headless: false
 
-  # Add raw simulator CLI arguments here if you later add a new option to
-  # fabric_newton_isaacsim_standalone.py before updating this file.
+  # Raw extra arguments appended to the simulator command (e.g. Kit flags).
   extra_args: []
 
-obstacle_distance:
-  parameters:
-    fabric_state_topic: /fabric/sim/state
-    distance_topic: /fabric/obstacle_distance
-    obstacle_id: table
-    table_center_x: 0.0
-    table_center_y: 0.0
-    table_hx: *table_hx
-    table_hy: *table_hy
-    table_hz: *table_hz
-    particle_radius: *particle_radius
-    safety_margin: 0.05
-    publish_debug_log: true
-    debug_log_period: 1.0
-
-cbf_controller:
-  parameters:
-    enabled: true
-    control_rate_hz: 10.0
-    frame_id: *ros_frame_id
-    leader_left_cbf_input_topic: /fabric/leader_left/cbf_input_cmd_vel
-    leader_right_cbf_input_topic: /fabric/leader_right/cbf_input_cmd_vel
-    obstacle_distance_topic: /fabric/obstacle_distance
-    fabric_corners_topic: /fabric/sim/corners
-    follower_left_cbf_topic: /fabric/follower_left/cbf_cmd_vel
-    follower_right_cbf_topic: /fabric/follower_right/cbf_cmd_vel
-    debug_topic: /fabric/cbf/debug
-    input_timeout: 0.25
-    distance_timeout: 0.25
-    corners_timeout: 0.50
-    activation_distance: 0.05
-    alpha_gain_near: 5.0
-    alpha_gain_far: 1.0
-    alpha_switch_h: 0.05
-    max_speed: 0.20
-    output_filter_beta: 0.0
-    weight_x: 1.0
-    weight_y: 1.0
-    weight_z: 1.0
-    jacobian_mode: normal_equal
-    min_jacobian_norm: 0.000001
-    cloth_half_width_x: 0.42
-    left_right_weight_power: 1.0
-    min_corner_weight: 0.0
-    formation_recovery_enabled: true
-    formation_recovery_gain: 0.5
-    formation_recovery_max_speed: 0.1
-    formation_recovery_deadband: 0.003
-    formation_reference_mode: initial
-    stale_policy: nominal
-    infeasible_policy: project_bounds
-    publish_debug: true
-    debug_log_enabled: true
-    debug_log_period: 1.0
+cbf:
+  # Sensitivity CBF settings; every key is documented in capsule_cbf/settings.py.
+  config: capsule_cbf/config.json
+  # Per-launch overrides of that JSON, e.g. {controller: none} to run unfiltered.
+  overrides: {}
 
 teleop:
   parameters:
     linear_speed: 0.10
     publish_rate: 30.0
-    frame_id: *ros_frame_id
+    frame_id: world

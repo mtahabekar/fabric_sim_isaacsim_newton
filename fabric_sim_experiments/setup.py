@@ -6,7 +6,7 @@ package_name = "fabric_sim_experiments"
 
 setup(
     name=package_name,
-    version="0.1.0",
+    version="0.2.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
@@ -24,7 +24,7 @@ setup(
     zip_safe=True,
     maintainer="taha",
     maintainer_email="mtahabekar@gmail.com",
-    description="Reproducible experiments for the IsaacSim fabric CBF stack.",
+    description="Reproducible Isaac Sim experiments for the fabric simulation with the sensitivity CBF.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

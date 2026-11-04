@@ -10,8 +10,7 @@ try:
 except ImportError:
     wp = None
 
-DEBUG_ARRAYS = ('surfaces', 'rows', 'rhs', 'detected_indices', 'basin_indices', 'detected_points',
-                'basin_points', 'candidate_indices')
+DEBUG_ARRAYS = ('surfaces', 'rows', 'rhs', 'candidate_indices')
 
 
 class PureHelpersTest(unittest.TestCase):
@@ -42,7 +41,7 @@ class ControllerOnNewtonTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         wp.init()
-        from capsule_cbf.core import Settings
+        from capsule_cbf.settings import Settings
         from capsule_cbf.scenario import build_plant
         cls.settings = Settings(prediction_grid_cells=8, strain_enabled=True, max_speed=.5)
 
@@ -55,11 +54,11 @@ class ControllerOnNewtonTest(unittest.TestCase):
             return plant
         cls.build = staticmethod(settled)
 
-    def controller(self, plant):
+    def controller(self, plant, cfg=None):
         from capsule_cbf.reduced_cloth import ReducedCloth
         from capsule_cbf.scenario import FRAME_DT
         from capsule_cbf.sensitivity_cbf import SensitivityCbfController
-        cfg = self.settings
+        cfg = cfg or self.settings
         red = ReducedCloth(plant.model, plant.patch, plant.corner_ids, plant.offsets, FRAME_DT,
                            cells=cfg.prediction_grid_cells, stride=cfg.horizon_stride)
         return SensitivityCbfController(plant.capsule, red, plant.rest[plant.corners], .008, cfg, FRAME_DT)
@@ -79,6 +78,25 @@ class ControllerOnNewtonTest(unittest.TestCase):
         self.assertEqual(debug['status'], 'feasible')
         self.assertEqual(debug['candidate_count'], 0)
         self.assertLess(abs(command).max(), 1e-3)
+        json.dumps({k: v for k, v in debug.items() if k not in DEBUG_ARRAYS}, allow_nan=False)
+
+    def test_unfiltered_mode_measures_but_passes_nominal(self):
+        from dataclasses import replace
+        from capsule_cbf.cloth_state import ClothState
+        plant = self.build(.95)
+        filtered = self.controller(plant)
+        unfiltered = self.controller(plant, replace(self.settings, controller='none'))
+        q, v = plant.state()
+        leaders = np.array([[.01, 0., -.02], [.01, 0., -.02]])
+        pull = np.array([[0., -.2, 0.], [0., -.2, 0.]])
+        command, debug = unfiltered.update(ClothState(q, v), q[plant.corners], leaders, 1/60, nominal=pull)
+        np.testing.assert_array_equal(command, pull)
+        self.assertEqual((debug['status'], debug['mode'], debug['correction']), ('unfiltered', 'none', 0.))
+        _, reference = filtered.update(ClothState(q, v), q[plant.corners], leaders, 1/60)
+        for key in ('min_clearance', 'h_min', 'tension', 'strain_ks'):
+            np.testing.assert_allclose(debug[key], reference[key])
+        default, _ = unfiltered.update(ClothState(q, v), q[plant.corners], leaders, 1/60)
+        np.testing.assert_allclose(default, unfiltered.nominal_command(q[plant.corners], leaders))
         json.dumps({k: v for k, v in debug.items() if k not in DEBUG_ARRAYS}, allow_nan=False)
 
     def test_overstretching_task_command_is_reduced(self):

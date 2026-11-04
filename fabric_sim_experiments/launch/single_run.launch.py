@@ -1,62 +1,37 @@
 #!/usr/bin/env python3
-"""
-Launch file for a single experiment run.
+"""Run experiment cells through the experiment runner.
 
-Usage:
-  ros2 launch fabric_sim_experiments single_run.launch.py \
-      config:=<path/to/exp.yaml> [headless:=true]
+    ros2 launch fabric_sim_experiments single_run.launch.py config:=<exp.yaml> [run_index:=1]
+        [run_all_cells:=true] [headless:=true] [runs_root:=runs]
 """
-
 from __future__ import annotations
+
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from pathlib import Path
 
 
 def _launch_setup(context, *args, **kwargs):
-    config = LaunchConfiguration("config").perform(context)
-    headless = LaunchConfiguration("headless").perform(context).lower() in ("true", "1", "yes")
-    runs_root = LaunchConfiguration("runs_root").perform(context)
-    settle_time = LaunchConfiguration("settle_time").perform(context)
-    run_only_first = LaunchConfiguration("run_only_first_cell").perform(context)
-
-    params = {
-        "config": config,
-        "headless": headless,
-        "runs_root": runs_root,
-        "settle_time": float(settle_time),
-        "run_only_first_cell": run_only_first.lower() in ("true", "1", "yes"),
-    }
-
-    runner_node = Node(
-        package="fabric_sim_experiments",
-        executable="experiment_runner",
-        name="experiment_runner",
-        output="screen",
-        emulate_tty=True,
-        parameters=[params],
-    )
-    return [runner_node]
+    value = lambda name: LaunchConfiguration(name).perform(context)  # noqa: E731
+    flag = lambda name: value(name).lower() in ('true', '1', 'yes')  # noqa: E731
+    params = dict(config=value('config'), run_index=int(value('run_index')), run_all_cells=flag('run_all_cells'),
+                  headless=flag('headless'), runs_root=value('runs_root'), settle_time=float(value('settle_time')))
+    return [Node(package='fabric_sim_experiments', executable='experiment_runner', name='experiment_runner',
+                 output='screen', emulate_tty=True, parameters=[params])]
 
 
 def generate_launch_description():
-    pkg_share = get_package_share_directory("fabric_sim_experiments")
-    default_config = str(Path(pkg_share) / "config" / "exp1_cbf_on_off.yaml")
-
+    default_config = Path(get_package_share_directory('fabric_sim_experiments'))/'config'/'exp1_cbf_on_off.yaml'
     return LaunchDescription([
-        DeclareLaunchArgument("config", default_value=default_config,
-                              description="Path to experiment YAML config."),
-        DeclareLaunchArgument("headless", default_value="false",
-                              description="Run IsaacSim headless."),
-        DeclareLaunchArgument("runs_root", default_value="runs",
-                              description="Root directory for run outputs."),
-        DeclareLaunchArgument("settle_time", default_value="3.0",
-                              description="Extra seconds to record after motion ends."),
-        DeclareLaunchArgument("run_only_first_cell", default_value="false",
-                              description="Only run the first sweep cell (for quick sanity check)."),
+        DeclareLaunchArgument('config', default_value=str(default_config), description='Experiment YAML.'),
+        DeclareLaunchArgument('run_index', default_value='0', description='Sweep cell to run.'),
+        DeclareLaunchArgument('run_all_cells', default_value='false', description='Run every sweep cell.'),
+        DeclareLaunchArgument('headless', default_value='false', description='Run Isaac Sim without a window.'),
+        DeclareLaunchArgument('runs_root', default_value='runs', description='Output root directory.'),
+        DeclareLaunchArgument('settle_time', default_value='3.0', description='Seconds recorded after motion.'),
         OpaqueFunction(function=_launch_setup),
     ])

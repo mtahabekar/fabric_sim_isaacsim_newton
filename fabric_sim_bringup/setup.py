@@ -5,7 +5,7 @@ package_name = "fabric_sim_bringup"
 
 setup(
     name=package_name,
-    version="0.1.0",
+    version="0.2.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
@@ -15,9 +15,10 @@ setup(
         ("share/" + package_name + "/scripts", glob("scripts/*")),
     ],
     install_requires=["setuptools"],
+    tests_require=["pytest"],
     zip_safe=True,
     maintainer="taha",
-    maintainer_email="taha@example.com",
-    description="Launch and configuration files for the IsaacSim fabric CBF simulation stack.",
+    maintainer_email="mtahabekar@gmail.com",
+    description="Launch and configuration for the Isaac Sim fabric simulation with the sensitivity CBF.",
     license="Apache-2.0",
 )

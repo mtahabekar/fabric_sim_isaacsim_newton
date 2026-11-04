@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
+"""Run one experiment cell end to end: Isaac Sim (+ sensitivity CBF) -> recorder -> leader driver.
+
+    ros2 run fabric_sim_experiments experiment_runner --ros-args \
+        -p config:=<exp.yaml> [-p run_index:=1] [-p run_all_cells:=true] [-p headless:=true]
+
+Each experiment YAML names a `base_config` (the bringup full_sim.yaml) whose
+simulator arguments and CBF settings it overrides, first for the whole
+experiment (`isaac_args`, `cbf_overrides`), then per sweep cell (`isaac_args`,
+`cbf_params`). Outputs go to <runs_root>/<exp_name>/<run_id>/; the merged CBF
+JSON and the exact simulator command are stored there for reproduction.
+batch_runner runs the full sweep.
 """
-Orchestrates a single experiment run end-to-end:
-  IsaacSim → obstacle_distance → cbf_controller → data_recorder → leader_driver
-
-Run via:
-  ros2 run fabric_sim_experiments experiment_runner \
-      --ros-args -p config:=<path/to/exp.yaml>
-
-By default this runs one sweep cell (index 0). Use batch_runner for the full
-sweep, or pass -p run_all_cells:=true when you intentionally want that here.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -22,572 +22,262 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-
-import yaml
+from typing import Any, Callable
 
 import rclpy
-from rclpy.node import Node
+from geometry_msgs.msg import PoseArray
+from std_msgs.msg import String
 
+from fabric_sim_bringup.sim_command import (SIM_ENV, cbf_config_path, find_repo_root, isaac_command,
+                                            load_yaml, resolve)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _load_yaml(path: str | Path) -> dict:
-    with open(path, "r") as f:
-        return yaml.safe_load(f) or {}
+DEBUG_TOPIC = '/fabric/capsule_cbf/debug'
+CORNERS_TOPIC = '/fabric/sim/corners'
 
 
 def _run_id() -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    h = hashlib.sha1(ts.encode()).hexdigest()[:6]
-    return f"{ts}_{h}"
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    return f'{stamp}_{hashlib.sha1(f"{stamp}{time.time_ns()}".encode()).hexdigest()[:6]}'
 
 
-def _topic_publisher_count(topic: str) -> int:
-    """Return the number of active publishers on a topic (0 if unknown)."""
-    try:
-        result = subprocess.run(
-            ["ros2", "topic", "info", topic],
-            capture_output=True,
-            timeout=5.0,
-        )
-        for line in result.stdout.decode().splitlines():
-            if "Publisher count:" in line:
-                return int(line.split(":")[-1].strip())
-    except Exception:
-        pass
-    return 0
-
-
-def _wait_for_topic(topic: str, timeout: float = 120.0) -> bool:
-    """Block until at least one publisher is live on the topic."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _topic_publisher_count(topic) > 0:
-            # Also confirm a message actually arrives (publisher may be mid-init)
-            try:
-                result = subprocess.run(
-                    ["ros2", "topic", "echo", "--once", "--no-daemon", topic],
-                    capture_output=True,
-                    timeout=8.0,
-                )
-                if result.returncode == 0:
-                    return True
-            except subprocess.TimeoutExpired:
-                pass
-        time.sleep(1.0)
-    return False
-
-
-def _wait_for_topic_message(
-    topic: str,
-    timeout: float = 120.0,
-    required_text: list[str] | None = None,
-) -> bool:
-    """Block until a topic publishes a message, optionally matching text.
-
-    This intentionally shells out to the ROS 2 CLI so the orchestrator does not
-    need to import every message type that it only uses for readiness checks.
-    """
-    required_text = required_text or []
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _topic_publisher_count(topic) > 0:
-            try:
-                result = subprocess.run(
-                    ["ros2", "topic", "echo", "--once", "--no-daemon", topic],
-                    capture_output=True,
-                    timeout=min(8.0, max(1.0, deadline - time.monotonic())),
-                )
-            except subprocess.TimeoutExpired:
-                result = None
-
-            if result is not None and result.returncode == 0:
-                text = result.stdout.decode(errors="replace")
-                if all(needle in text for needle in required_text):
-                    return True
-        time.sleep(1.0)
-    return False
-
-
-def _wait_for_topic_gone(topic: str, timeout: float = 60.0) -> bool:
-    """Block until the topic has zero publishers (previous run fully dead)."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if _topic_publisher_count(topic) == 0:
-            return True
-        time.sleep(2.0)
-    print(f"[runner] WARNING: {topic} still has publishers after {timeout} s")
-    return False
-
-
-def _popen(cmd: list[str], *, cwd: str | None = None) -> subprocess.Popen:
-    """Start a child in its own process group so cleanup reaches descendants."""
-    return subprocess.Popen(cmd, cwd=cwd, start_new_session=True)
+def _popen(cmd: list[str], *, cwd: str | None = None, env: dict | None = None) -> subprocess.Popen:
+    """Start a child in its own process group so cleanup reaches its descendants."""
+    return subprocess.Popen(cmd, cwd=cwd, env=env, start_new_session=True)
 
 
 def _kill(proc: subprocess.Popen, timeout: float = 10.0) -> None:
     if proc.poll() is not None:
         return
-    try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    except Exception:
-        proc.send_signal(signal.SIGTERM)
-    try:
-        proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
+    for sig, wait in ((signal.SIGINT, timeout), (signal.SIGTERM, timeout), (signal.SIGKILL, 5.0)):
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(os.getpgid(proc.pid), sig)
         except ProcessLookupError:
             return
-        except Exception:
-            proc.kill()
-        proc.wait(timeout=5.0)
-
-
-def _bool_flag(val: Any) -> bool:
-    if isinstance(val, bool):
-        return val
-    return str(val).strip().lower() in ("1", "true", "yes", "on")
-
-
-def _leader_stop_params(cfg: dict, run_params: dict) -> dict:
-    """Build leader-driver params for fixed-distance motion."""
-    if "leader_speed_y" in run_params:
-        axis = "y"
-    elif "leader_speed_z" in run_params:
-        axis = "z"
-    else:
-        axis = str(run_params.get("leader_motion_axis", "x")).strip().lower()
-
-    speed = float(run_params.get("leader_speed", run_params.get(f"leader_speed_{axis}", 0.05)))
-    params = {
-        "linear_speed_x": 0.0,
-        "linear_speed_y": 0.0,
-        "linear_speed_z": 0.0,
-        "motion_distance": run_params.get("leader_motion_distance", 1.4),
-        "start_delay": run_params.get("leader_start_delay", 0.0),
-    }
-    if axis in ("x", "y", "z"):
-        params[f"linear_speed_{axis}"] = speed
-    else:
-        params["linear_speed_x"] = speed
-    return params
-
-
-def _build_isaac_cmd(
-    isaac_cfg: dict,
-    run_params: dict,
-    headless: bool = False,
-) -> list[str]:
-    python_sh = str(isaac_cfg["python_sh"])
-    script = str(isaac_cfg["script"])
-    base_args: dict = dict(isaac_cfg.get("arguments", {}) or {})
-    base_args.update(run_params.get("isaac_args", {}))
-
-    BOOLEAN_FLAGS = {
-        "disable_cuda_graph",
-        "external_cbf_enabled",
-    }
-
-    cmd = [python_sh, script]
-    if headless:
-        cmd += ["--headless"]
-
-    for key, value in base_args.items():
-        if value is None:
+        try:
+            proc.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
             continue
-        flag = "--" + key.replace("_", "-")
-        if key in BOOLEAN_FLAGS:
-            if _bool_flag(value):
-                cmd.append(flag)
-        else:
-            cmd.extend([flag, str(value)])
 
-    for extra in (isaac_cfg.get("extra_args") or []):
-        cmd.append(str(extra))
 
+def _ros2_run(package: str, executable: str, params: dict[str, Any]) -> list[str]:
+    cmd = ['ros2', 'run', package, executable, '--ros-args']
+    for key, value in params.items():
+        cmd += ['-p', f'{key}:={json.dumps(value) if isinstance(value, (list, bool)) else value}']
     return cmd
 
 
-def _ros2_run(package: str, executable: str, params: dict) -> list[str]:
-    cmd = ["ros2", "run", package, executable, "--ros-args"]
-    for k, v in params.items():
-        cmd += ["-p", f"{k}:={v}"]
-    return cmd
+def experiment_settings(config_path: Path) -> tuple[dict, Path, dict]:
+    """Experiment YAML, repository root and its merged base (bringup) config."""
+    exp = load_yaml(config_path)
+    root = find_repo_root(config_path)
+    base = load_yaml(resolve(exp.get('base_config', 'fabric_sim_bringup/config/full_sim.yaml'), root))
+    return exp, root, base
 
 
-def generate_figures_for_experiment(
-    exp_name: str,
-    runs_dir: Path,
-    cfg: dict,
-) -> None:
-    """Generate report figures from CSVs for experiments with plotters."""
-    obstacle_params = dict((cfg.get("obstacle_distance") or {}).get("parameters", {}) or {})
-    safety_margin = str(obstacle_params.get("safety_margin", 0.05))
-    table_hx = str(obstacle_params.get("table_hx", 0.22))
-    table_hy = str(obstacle_params.get("table_hy", 0.22))
-    table_hz = str(obstacle_params.get("table_hz", 0.16))
+def cbf_margin(cbf_json: Path) -> float:
+    return float(json.loads(cbf_json.read_text()).get('margin', 0.05))
 
-    if exp_name.startswith("exp1"):
-        cmd = [
-            sys.executable,
-            "-m",
-            "fabric_sim_experiments.plotting.plot_trajectories_3d",
-            str(runs_dir),
-            "--safety-margin",
-            safety_margin,
-            "--table-hx",
-            table_hx,
-            "--table-hy",
-            table_hy,
-            "--table-hz",
-            table_hz,
-        ]
-    elif exp_name.startswith("exp2"):
-        cmd = [
-            sys.executable,
-            "-m",
-            "fabric_sim_experiments.plotting.plot_resolution_timing",
-            str(runs_dir),
-        ]
-    elif exp_name.startswith("exp3"):
-        cmd = [
-            sys.executable,
-            "-m",
-            "fabric_sim_experiments.plotting.plot_leader_speed_sweep",
-            str(runs_dir),
-            "--safety-margin",
-            safety_margin,
-        ]
-    else:
-        print(f"[runner] No automatic plotter configured for {exp_name}.")
+
+def generate_figures_for_experiment(exp_name: str, runs_dir: Path, margin: float) -> None:
+    """Regenerate the figures of an experiment from its CSVs."""
+    plotters = {'exp1': ('plot_trajectories_3d', ['--safety-margin', str(margin)]),
+                'exp2': ('plot_resolution_timing', []),
+                'exp3': ('plot_leader_speed_sweep', ['--safety-margin', str(margin)])}
+    entry = plotters.get(exp_name[:4])
+    if entry is None:
+        print(f'[runner] No automatic plotter for {exp_name}.')
         return
-
-    print(f"[runner] Generating figures for {exp_name} ...")
+    module, extra = entry
+    cmd = [sys.executable, '-m', f'fabric_sim_experiments.plotting.{module}', str(runs_dir), *extra]
+    print(f'[runner] Generating figures for {exp_name} ...')
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.stdout:
         print(result.stdout.rstrip())
     if result.returncode != 0:
-        if result.stderr:
-            print(result.stderr.rstrip(), file=sys.stderr)
-        print(
-            f"[runner] WARNING: figure generation failed with return code {result.returncode}",
-            file=sys.stderr,
-        )
+        print(result.stderr.rstrip(), file=sys.stderr)
+        print(f'[runner] WARNING: figure generation failed ({result.returncode})', file=sys.stderr)
 
 
-# ---------------------------------------------------------------------------
-# Core runner
-# ---------------------------------------------------------------------------
+class _Waiter:
+    """Small rclpy helper: wait for messages and publisher counts."""
+
+    def __init__(self) -> None:
+        if not rclpy.ok():
+            rclpy.init()
+        self.node = rclpy.create_node('experiment_runner_waiter')
+
+    def message(self, msg_type: type, topic: str, accept: Callable[[Any], bool], timeout: float,
+                alive: Callable[[], None]) -> bool:
+        found = []
+        sub = self.node.create_subscription(msg_type, topic, lambda m: accept(m) and found.append(m), 10)
+        deadline = time.monotonic()+timeout
+        try:
+            while not found and time.monotonic() < deadline:
+                rclpy.spin_once(self.node, timeout_sec=0.2)
+                alive()
+        finally:
+            self.node.destroy_subscription(sub)
+        return bool(found)
+
+    def no_publishers(self, topic: str, timeout: float) -> bool:
+        deadline = time.monotonic()+timeout
+        while time.monotonic() < deadline:
+            if self.node.count_publishers(topic) == 0:
+                return True
+            rclpy.spin_once(self.node, timeout_sec=0.5)
+        return False
+
+    def close(self) -> None:
+        self.node.destroy_node()
+
+
+def _active(msg: String) -> bool:
+    """A CBF debug message published after the warm-up frames."""
+    try:
+        return json.loads(msg.data).get('warmup') is False
+    except ValueError:
+        return False
+
 
 class ExperimentRunner:
-    def __init__(
-        self,
-        config_path: Path,
-        run_params: dict,
-        runs_root: Path,
-        exp_name: str,
-        headless: bool = False,
-        settle_time: float = 5.0,
-        isaac_ready_timeout: float = 120.0,
-        cbf_ready_timeout: float = 30.0,
-        generate_figures: bool = True,
-    ) -> None:
-        self.config = _load_yaml(config_path)
-        self.run_params = run_params
-        self.runs_root = runs_root
-        self.exp_name = exp_name
-        self.headless = headless
-        self.settle_time = settle_time
-        self.isaac_ready_timeout = isaac_ready_timeout
-        self.cbf_ready_timeout = cbf_ready_timeout
+    def __init__(self, config_path: Path, run_params: dict, runs_root: Path, exp_name: str,
+                 headless: bool = False, settle_time: float = 3.0, isaac_ready_timeout: float = 300.0,
+                 generate_figures: bool = True) -> None:
         self.config_path = config_path
+        self.exp, self.root, self.base = experiment_settings(config_path)
+        self.run_params = run_params
+        self.runs_root, self.exp_name = runs_root, exp_name
+        self.headless, self.settle_time = headless, settle_time
+        self.isaac_ready_timeout = isaac_ready_timeout
         self.generate_figures = generate_figures
-
         self.run_id = _run_id()
-        self.run_dir = runs_root / exp_name / self.run_id
+        self.run_dir = (runs_root/exp_name/self.run_id).resolve()
         self.run_dir.mkdir(parents=True, exist_ok=True)
-
         self._procs: list[subprocess.Popen] = []
 
-    # ------------------------------------------------------------------
-    def _check_child_processes(
-        self,
-        context: str,
-        ignore_pids: set[int] | None = None,
-    ) -> None:
-        ignore_pids = ignore_pids or set()
+    def _alive(self, ignore: set[int] = frozenset()) -> None:
         for proc in self._procs:
-            if proc.pid in ignore_pids:
-                continue
-            rc = proc.poll()
-            if rc is not None:
-                raise RuntimeError(
-                    f"child process exited during {context} with return code {rc}: "
-                    f"{' '.join(str(x) for x in proc.args)}"
-                )
+            if proc.pid not in ignore and proc.poll() is not None:
+                raise RuntimeError(f'child exited with code {proc.returncode}: {" ".join(map(str, proc.args))}')
 
-    def _write_meta(self) -> None:
-        meta = {
-            "run_id": self.run_id,
-            "exp_name": self.exp_name,
-            "run_params": self.run_params,
-            "config_file": str(self.config_path),
-            "headless": self.headless,
-            "settle_time": self.settle_time,
-            "created_utc": datetime.now(timezone.utc).isoformat(),
-        }
-        with open(self.run_dir / "meta.json", "w") as f:
-            json.dump(meta, f, indent=2)
+    def _commands(self) -> tuple[list[str], str, Path, dict]:
+        arguments = {**(self.exp.get('isaac_args') or {}), **self.run_params.get('isaac_args', {})}
+        if self.headless:
+            arguments['headless'] = True
+        cbf_overrides = {**(self.exp.get('cbf_overrides') or {}), **self.run_params.get('cbf_params', {})}
+        cbf_json = cbf_config_path(self.base, self.root, self.run_dir, overrides=cbf_overrides)
+        if cbf_json.parent != self.run_dir:  # keep a copy of the settings with every run
+            (self.run_dir/'cbf_config.json').write_text(cbf_json.read_text())
+            cbf_json = self.run_dir/'cbf_config.json'
+        command, cwd = isaac_command(self.base, self.root, cbf_json, argument_overrides=arguments)
+        velocity = [float(v) for v in self.run_params.get('leader_velocity', (0.0, 0.0, 0.0))]
+        leader = dict(linear_speed_x=velocity[0], linear_speed_y=velocity[1], linear_speed_z=velocity[2],
+                      motion_distance=float(self.run_params.get('leader_motion_distance', 0.4)),
+                      start_delay=float(self.run_params.get('leader_start_delay', 0.0)))
+        return command, cwd, cbf_json, leader
 
     def run(self) -> Path:
-        cfg = self.config
-        isaac_cfg = cfg.get("isaac_sim", {})
-        cbf_params: dict = dict((cfg.get("cbf_controller") or {}).get("parameters", {}) or {})
-        obstacle_params: dict = dict((cfg.get("obstacle_distance") or {}).get("parameters", {}) or {})
+        command, cwd, cbf_json, leader = self._commands()
+        (self.run_dir/'meta.json').write_text(json.dumps(dict(
+            run_id=self.run_id, exp_name=self.exp_name, run_params=self.run_params,
+            config_file=str(self.config_path), headless=self.headless, settle_time=self.settle_time,
+            isaac_command=command, leader_driver=leader, created_utc=datetime.now(timezone.utc).isoformat()),
+            indent=2))
+        banner = self.run_params.get('banner')
+        print(f"\n{'='*70}\n  {self.exp_name} | run {self.run_id}\n  params: {self.run_params}\n"
+              f"  output: {self.run_dir}\n{'='*70}")
+        if banner:
+            print(f'>>> {banner}: take screenshots now (t = 0 %)')
 
-        # Apply run-specific overrides
-        cbf_params.update(self.run_params.get("cbf_params", {}))
-        obstacle_params.update(self.run_params.get("obstacle_params", {}))
-
-        leader_params = _leader_stop_params(cfg, self.run_params)
-
-        recorder_params = {
-            "run_dir": str(self.run_dir),
-        }
-        self._write_meta()
-
-        # Banner for qualitative experiments (Exp 4 / 5) — one per param value
-        mu_tag = self.run_params.get("mu_tag")
-        stiffness_tag = self.run_params.get("stiffness_tag")
-        if mu_tag is not None:
-            print(f"\n{'#'*70}")
-            print(f"### EXP4 FRICTION SWEEP  contact_mu = {mu_tag}  ###")
-            print(f"### Run ID: {self.run_id}")
-            print(f"{'#'*70}\n")
-            print(">>> TAKE SCREENSHOTS NOW at t=0%  (before starting motion)")
-        elif stiffness_tag is not None:
-            print(f"\n{'#'*70}")
-            print(f"### EXP5 STIFFNESS SWEEP  preset = {stiffness_tag}  ###")
-            print(f"### Run ID: {self.run_id}")
-            print(f"{'#'*70}\n")
-            print(">>> TAKE SCREENSHOTS NOW at t=0%  (before starting motion)")
-        else:
-            print(f"\n{'='*60}")
-            print(f"  Run: {self.run_id}  |  exp: {self.exp_name}")
-            print(f"  Params: {self.run_params}")
-            print(f"  Output: {self.run_dir}")
-            print(f"{'='*60}\n")
-
-        isaac_cmd = _build_isaac_cmd(isaac_cfg, self.run_params, self.headless)
-        cwd = str(isaac_cfg.get("working_directory", "."))
-
-        # Make stale/orphaned simulators visible before launching another one.
-        print("[runner] Checking for stale /fabric/sim/corners publishers ...")
-        if not _wait_for_topic_gone("/fabric/sim/corners", timeout=10.0):
-            raise RuntimeError(
-                "stale /fabric/sim/corners publisher detected before this run. "
-                "Stop any existing IsaacSim/fabric simulation before running experiments."
-            )
-
+        waiter = _Waiter()
         try:
-            # 1. Start IsaacSim
-            print("[runner] Starting IsaacSim...")
-            self._procs.append(_popen(isaac_cmd, cwd=cwd))
+            if not waiter.no_publishers(CORNERS_TOPIC, 10.0):
+                raise RuntimeError(f'{CORNERS_TOPIC} is already published: stop the running simulator first')
+            print('[runner] Starting Isaac Sim ...')
+            self._procs.append(_popen(command, cwd=cwd, env={**os.environ, **SIM_ENV}))
+            if not waiter.message(PoseArray, CORNERS_TOPIC, lambda m: True, self.isaac_ready_timeout, self._alive):
+                raise RuntimeError(f'Isaac Sim did not publish {CORNERS_TOPIC} in time')
+            print('[runner] Waiting for the CBF warm-up to finish ...')
+            if not waiter.message(String, DEBUG_TOPIC, _active, 120.0, self._alive):
+                raise RuntimeError(f'{DEBUG_TOPIC} did not report the end of warm-up in time')
 
-            # 2. Wait for /fabric/sim/corners
-            print("[runner] Waiting for /fabric/sim/corners ...")
-            if not _wait_for_topic("/fabric/sim/corners", timeout=self.isaac_ready_timeout):
-                self._check_child_processes("IsaacSim startup")
-                raise RuntimeError("IsaacSim did not publish /fabric/sim/corners in time")
-            self._check_child_processes("IsaacSim startup")
-            print("[runner] IsaacSim ready.")
-
-            # 3. Start obstacle_distance node
-            print("[runner] Starting obstacle_distance node...")
-            self._procs.append(_popen(
-                _ros2_run("fabric_obstacle_distance", "obstacle_distance_node.py", obstacle_params)
-            ))
-            time.sleep(1.0)
-            self._check_child_processes("obstacle_distance startup")
-            print("[runner] Waiting for valid obstacle distance ...")
-            if not _wait_for_topic_message(
-                "/fabric/obstacle_distance",
-                timeout=30.0,
-                required_text=["valid: true"],
-            ):
-                self._check_child_processes("obstacle_distance startup")
-                raise RuntimeError("obstacle_distance did not publish a valid message in time")
-            self._check_child_processes("obstacle_distance startup")
-
-            # 4. Start CBF controller
-            print("[runner] Starting CBF controller...")
-            self._procs.append(_popen(
-                _ros2_run("fabric_cbf_controller", "fabric_cbf_controller_node.py", cbf_params)
-            ))
-            time.sleep(1.0)
-            self._check_child_processes("CBF startup")
-
-            # Wait for CBF to consume a valid distance message before the leader moves.
-            print("[runner] Waiting for valid CBF debug message...")
-            if not _wait_for_topic_message(
-                "/fabric/cbf/debug",
-                timeout=self.cbf_ready_timeout,
-                required_text=["valid_distance: true"],
-            ):
-                self._check_child_processes("CBF startup")
-                raise RuntimeError("CBF debug did not report valid_distance=true in time")
-            self._check_child_processes("CBF startup")
-
-            # 5. Start data recorder
-            print("[runner] Starting data recorder...")
-            self._procs.append(_popen(
-                _ros2_run("fabric_sim_experiments", "data_recorder", recorder_params)
-            ))
-            time.sleep(1.0)
-            self._check_child_processes("data recorder startup")
-
-            # 6. Start leader driver and wait for it to finish
-            print("[runner] Starting leader driver...")
-            leader_cmd = _ros2_run("fabric_sim_experiments", "leader_driver", leader_params)
-            leader_proc = _popen(leader_cmd)
-            self._procs.append(leader_proc)
-            while leader_proc.poll() is None:
-                self._check_child_processes("leader motion", ignore_pids={leader_proc.pid})
-                time.sleep(1.0)
-            if leader_proc.returncode != 0:
-                raise RuntimeError(
-                    f"leader_driver exited with return code {leader_proc.returncode}: "
-                    f"{' '.join(leader_cmd)}"
-                )
-            print(f"[runner] Leader driver finished. Settling for {self.settle_time} s ...")
+            print('[runner] Starting data recorder ...')
+            self._procs.append(_popen(_ros2_run('fabric_sim_experiments', 'data_recorder',
+                                                {'run_dir': str(self.run_dir)})))
+            time.sleep(2.0)
+            self._alive()
+            print('[runner] Starting leader driver ...')
+            driver = _popen(_ros2_run('fabric_sim_experiments', 'leader_driver', leader))
+            self._procs.append(driver)
+            while driver.poll() is None:
+                self._alive(ignore={driver.pid})
+                time.sleep(0.5)
+            if driver.returncode != 0:
+                raise RuntimeError(f'leader_driver exited with code {driver.returncode}')
+            print(f'[runner] Leader motion finished; recording {self.settle_time} s more ...')
             time.sleep(self.settle_time)
-
         finally:
-            # End-of-run banner for qualitative experiments
-            mu_tag = self.run_params.get("mu_tag")
-            stiffness_tag = self.run_params.get("stiffness_tag")
-            if mu_tag is not None:
-                print(f"\n{'#'*70}")
-                print(f"### EXP4 DONE  contact_mu = {mu_tag}  run_id = {self.run_id}")
-                print(f"{'#'*70}\n")
-            elif stiffness_tag is not None:
-                print(f"\n{'#'*70}")
-                print(f"### EXP5 DONE  preset = {stiffness_tag}  run_id = {self.run_id}")
-                print(f"{'#'*70}\n")
-            print("[runner] Shutting down all processes...")
-            for p in reversed(self._procs):
-                _kill(p)
-            # Wait until IsaacSim has fully released its ROS topics before
-            # returning, so the next run does not see stale publishers.
-            print("[runner] Waiting for /fabric/sim/corners to disappear ...")
-            _wait_for_topic_gone("/fabric/sim/corners", timeout=60.0)
-            print("[runner] Cleanup complete.")
+            if banner:
+                print(f'>>> {banner}: done (run {self.run_id})')
+            print('[runner] Shutting down ...')
+            for proc in reversed(self._procs):
+                _kill(proc)
+            if not waiter.no_publishers(CORNERS_TOPIC, 60.0):
+                print(f'[runner] WARNING: {CORNERS_TOPIC} still has publishers')
+            waiter.close()
 
-        # Validate outputs
         self._check_outputs()
         if self.generate_figures:
-            generate_figures_for_experiment(
-                self.exp_name,
-                self.runs_root / self.exp_name,
-                self.config,
-            )
-        print(f"[runner] Done. Output: {self.run_dir}")
+            generate_figures_for_experiment(self.exp_name, self.runs_root/self.exp_name, cbf_margin(cbf_json))
+        print(f'[runner] Done: {self.run_dir}')
         return self.run_dir
 
     def _check_outputs(self) -> None:
-        expected = ["corners.csv", "obstacle_distance.csv", "cbf_debug.csv",
-                    "sim_perf.csv", "cmd_vels.csv", "meta.json"]
-        for fname in expected:
-            fpath = self.run_dir / fname
-            if not fpath.exists():
-                print(f"[runner] WARNING: expected output not found: {fpath}")
-            elif fpath.stat().st_size == 0:
-                print(f"[runner] WARNING: output file is empty: {fpath}")
-            else:
-                print(f"[runner] OK: {fpath} ({fpath.stat().st_size} bytes)")
+        for name in ('corners.csv', 'cbf_debug.csv', 'sim_timing.csv', 'cmd_vels.csv', 'meta.json',
+                     'cbf_config.json'):
+            path = self.run_dir/name
+            size = path.stat().st_size if path.exists() else 0
+            print(f"[runner] {'OK' if size else 'WARNING: missing or empty'}: {path} ({size} bytes)")
 
 
-# ---------------------------------------------------------------------------
-# ROS 2 node wrapper (for `ros2 run fabric_sim_experiments experiment_runner`)
-# ---------------------------------------------------------------------------
+def select_cells(sweep: list[dict], run_index: int, run_all: bool) -> list[dict]:
+    if run_all:
+        return sweep
+    if not 0 <= run_index < len(sweep):
+        raise SystemExit(f'run_index={run_index} outside 0..{len(sweep)-1}')
+    return [sweep[run_index]]
 
-class ExperimentRunnerNode(Node):
-    def __init__(self) -> None:
-        super().__init__("experiment_runner")
-        self.declare_parameter("config", "")
-        self.declare_parameter("run_only_first_cell", True)
-        self.declare_parameter("run_all_cells", False)
-        self.declare_parameter("run_index", 0)
-        self.declare_parameter("runs_root", "runs")
-        self.declare_parameter("headless", False)
-        self.declare_parameter("settle_time", 5.0)
-        self.declare_parameter("generate_figures", True)
+
+def read_parameters(node_name: str, defaults: dict[str, Any], args=None) -> dict[str, Any]:
+    rclpy.init(args=args)
+    node = rclpy.create_node(node_name)
+    values = {k: node.declare_parameter(k, v).value for k, v in defaults.items()}
+    node.destroy_node()
+    return values
 
 
 def main(args=None) -> None:
-    rclpy.init(args=args)
-    node = ExperimentRunnerNode()
-
-    config_path_str = node.get_parameter("config").value
-    run_only_first = bool(node.get_parameter("run_only_first_cell").value)
-    run_all_cells = bool(node.get_parameter("run_all_cells").value)
-    run_index = int(node.get_parameter("run_index").value)
-    runs_root = Path(node.get_parameter("runs_root").value).expanduser()
-    headless = bool(node.get_parameter("headless").value)
-    settle_time = float(node.get_parameter("settle_time").value)
-    generate_figures = bool(node.get_parameter("generate_figures").value)
-
-    node.destroy_node()
-    rclpy.shutdown()
-
-    if not config_path_str:
-        print("ERROR: 'config' parameter is required", file=sys.stderr)
-        sys.exit(1)
-
-    config_path = Path(config_path_str).expanduser()
-    cfg = _load_yaml(config_path)
-    sweep: list[dict] = cfg.get("sweep", [{}])
-    exp_name: str = cfg.get("exp_name", config_path.stem)
-
-    if not sweep:
-        sweep = [{}]
-
-    if run_all_cells or not run_only_first:
-        selected_runs = sweep
-        print(f"[runner] Running all {len(selected_runs)} sweep cell(s).")
-    else:
-        if run_index < 0 or run_index >= len(sweep):
-            print(
-                f"ERROR: run_index={run_index} is outside the sweep range "
-                f"0..{len(sweep) - 1}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-        selected_runs = [sweep[run_index]]
-        print(
-            f"[runner] Running one sweep cell by default: index {run_index} "
-            f"of {len(sweep)}. Use batch_runner or -p run_all_cells:=true "
-            "for the full sweep."
-        )
-
-    for run_params in selected_runs:
-        runner = ExperimentRunner(
-            config_path=config_path,
-            run_params=dict(run_params),
-            runs_root=runs_root,
-            exp_name=exp_name,
-            headless=headless,
-            settle_time=settle_time,
-            generate_figures=generate_figures,
-        )
-        runner.run()
+    p = read_parameters('experiment_runner', dict(config='', run_index=0, run_all_cells=False, runs_root='runs',
+                                                  headless=False, settle_time=3.0, generate_figures=True), args)
+    if not p['config']:
+        raise SystemExit("The 'config' parameter is required")
+    config_path = Path(p['config']).expanduser()
+    exp = load_yaml(config_path)
+    sweep = exp.get('sweep') or [{}]
+    exp_name = exp.get('exp_name', config_path.stem)
+    cells = select_cells(sweep, int(p['run_index']), bool(p['run_all_cells']))
+    if len(cells) < len(sweep):
+        print(f'[runner] Running sweep cell {p["run_index"]} of {len(sweep)}; use batch_runner for all cells.')
+    try:
+        for cell in cells:
+            ExperimentRunner(config_path, dict(cell), Path(p['runs_root']).expanduser(), exp_name,
+                             headless=bool(p['headless']), settle_time=float(p['settle_time']),
+                             generate_figures=bool(p['generate_figures'])).run()
+    finally:
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

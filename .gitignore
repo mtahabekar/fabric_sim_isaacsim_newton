@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# Experiment outputs (fabric_sim_experiments, default runs_root)
+runs/

@@ -25,7 +25,7 @@ class ReducedCloth:
         rest = model.particle_q.numpy()[particle_start:particle_start+n].astype(float)
         self.rest = rest
         if cells:
-            from .coarse_prediction import MaterialGrid, build_coarse_model
+            from .material_grid import MaterialGrid, build_coarse_model
             grid = MaterialGrid(rest, self.fine_patch, corner_ids, cells)
             coarse, nodes, pin_corners, pin_offsets = build_coarse_model(
                 model, grid, patch, corner_ids, offsets, particle_start, particle_radius)

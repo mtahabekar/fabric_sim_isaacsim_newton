@@ -1,183 +1,86 @@
 # fabric_sim_experiments
 
-Reproducible experiment suite for the IsaacSim + Newton fabric CBF stack.
-
-Inspired by Aksoy & Wen, "Collaborative Manipulation of Deformable Objects with
-Predictive Obstacle Avoidance," ICRA 2024, adapted to the 2-leader / 2-follower
-setup with collision **and** stretch CBFs.
-
----
-
-## Prerequisites
+Scripted Isaac Sim experiments with the sensitivity CBF in the loop: each run
+starts the simulator, waits for the CBF warm-up, records ROS 2 topics to CSV
+while a leader driver moves both leaders, shuts everything down and plots.
+Inspired by Aksoy and Wen, "Collaborative Manipulation of Deformable Objects
+with Predictive Obstacle Avoidance", ICRA 2024 (Fig. 8-9, Table I analogues).
 
 ```bash
-cd /home/taha/ros2_colcon_ws
-colcon build --symlink-install --packages-select fabric_sim_experiments
+cd ~/ros2_colcon_ws && colcon build --symlink-install --packages-select fabric_sim_bringup fabric_sim_experiments
 source install/setup.bash
+CFG=$(ros2 pkg prefix fabric_sim_experiments)/share/fabric_sim_experiments/config
+
+ros2 run fabric_sim_experiments experiment_runner --ros-args -p config:=$CFG/exp1_cbf_on_off.yaml            # cell 0
+ros2 run fabric_sim_experiments experiment_runner --ros-args -p config:=$CFG/exp1_cbf_on_off.yaml -p run_index:=1
+ros2 run fabric_sim_experiments batch_runner --ros-args -p config:=$CFG/exp1_cbf_on_off.yaml -p headless:=true
+ros2 launch fabric_sim_experiments single_run.launch.py config:=$CFG/exp3_leader_speed_sweep.yaml run_all_cells:=true
 ```
 
----
+Parameters: `config`, `runs_root` (default `runs`, relative to the current
+directory), `headless`, `settle_time` (s recorded after the motion),
+`generate_figures`; `experiment_runner` also takes `run_index` / `run_all_cells`.
 
-## Package layout
+## Experiments
 
+| Config | Question | Scenario | CBF |
+| --- | --- | --- | --- |
+| `exp1_cbf_on_off` | trajectories and clearance with vs without the filter | cloth at 0.85 m, leaders descend 0.33 m at 0.1 m/s | on / off |
+| `exp2_resolution_sweep` | simulation rate and CBF cost vs cloth resolution (20x20 to 128x128) | as Exp. 1 | on |
+| `exp3_leader_speed_sweep` | clearance vs leader speed (0.05-0.40 m/s) | as Exp. 1 | on, one off baseline |
+| `exp4_friction_sweep` | contact friction (screenshots) | cloth beside the table, dragged across it at 0.05 m/s | off |
+| `exp5_stiffness_sweep` | stretch/bending stiffness (screenshots) | as Exp. 4 | off |
+
+"CBF off" is `controller: none`: the followers receive the same nominal
+command unfiltered, and clearance, tension and strain are still recorded.
+Exp. 4-5 drag the cloth over the table, i.e. into the capsule envelope, so
+they run unfiltered. Validated range: the filter is validated at 0.1 m/s on
+the 56x56 cloth; at 0.2-0.4 m/s and at 20x20 the stretch limits become
+infeasible and clearance yields (see `capsule_cbf/README.md`). Exp. 2's
+coarse cells and Exp. 3's fast cells therefore show these limits.
+
+## Experiment YAML
+
+```yaml
+exp_name: exp1_cbf_on_off
+n_repeats: 1
+base_config: fabric_sim_bringup/config/full_sim.yaml   # simulator + CBF defaults
+isaac_args: {cloth_start_z: 0.85}                      # simulator flag overrides, every cell
+cbf_overrides: {}                                      # CBF JSON overrides, every cell
+sweep:                                                 # one entry per cell
+  - scenario: descend                                  # tags read by the plotters
+    cbf_on: true
+    leader_velocity: [0.0, 0.0, -0.10]                 # m/s, both leaders
+    leader_motion_distance: 0.33                       # m along the velocity, from /fabric/sim/corners
+    leader_start_delay: 1.0                            # s after the warm-up
+    isaac_args: {}                                     # per-cell simulator overrides
+    cbf_params: {controller: sensitivity}              # per-cell CBF overrides
+    banner: "..."                                      # optional: printed for manual screenshots
 ```
-fabric_sim_experiments/
-├── fabric_sim_experiments/
-│   ├── data_recorder_node.py    # records to CSVs during a live run
-│   ├── leader_driver_node.py    # programmatic leader velocity driver
-│   ├── experiment_runner.py     # orchestrates one run end-to-end
-│   ├── batch_runner.py          # sweeps over a config YAML
-│   └── plotting/
-│       ├── plot_trajectories_3d.py    # Exp 1 figures
-│       ├── plot_min_distance.py       # standalone distance plotter
-│       ├── plot_resolution_timing.py  # Exp 2 performance figure
-│       └── plot_leader_speed_sweep.py # Exp 3 distance figure
-├── config/
-│   ├── exp1_cbf_on_off.yaml
-│   ├── exp2_resolution_sweep.yaml
-│   ├── exp3_leader_speed_sweep.yaml
-│   ├── exp4_friction_sweep.yaml
-│   └── exp5_stiffness_sweep.yaml
-└── launch/
-    └── single_run.launch.py
-```
 
----
+## Outputs (`<runs_root>/<exp_name>/<run_id>/`)
 
-## Running experiments
+| File | Contents |
+| --- | --- |
+| `meta.json` | run parameters, exact simulator command, leader driver parameters |
+| `cbf_config.json` | the merged CBF settings the simulator used |
+| `corners.csv` | `t`, `<corner>_x/y/z` for follower_left, follower_right, leader_left, leader_right |
+| `cbf_debug.csv` | per frame: `sim_time, status, mode, warmup, min_clearance, h_min, candidate_count, total_rows, correction, slack_soft, slack_hard, controller_ms, max_tension, tension_<corner>, max_strain_ks`, nominal and applied follower velocities |
+| `sim_timing.csv` | `sim_time, frame_ms, fps, cbf_ms` |
+| `cmd_vels.csv` | leader commands and applied follower commands |
 
-### Quick sanity check — single cell, CBF on
+`batch_runner` adds `<exp_name>/summary.csv` (minimum clearance and barrier,
+frames inside the margin and touching the capsule, relaxed frames, max
+tension, CBF time, FPS, max corner heights). Figures (png/pdf/svg) go to
+`<exp_name>/figures/` and are symlinked into `<runs_root>/report_figures/`:
 
 ```bash
-ros2 run fabric_sim_experiments experiment_runner \
-    --ros-args \
-    -p config:=$(ros2 pkg prefix fabric_sim_experiments)/share/fabric_sim_experiments/config/exp1_cbf_on_off.yaml
-```
-
-Produces CSVs under `runs/exp1_cbf_on_off/<run_id>/`.
-Figures are generated automatically under `runs/exp1_cbf_on_off/figures/` and
-symlinked into `runs/report_figures/`. With only the first sanity cell, the Exp.
-1 trajectory plots contain the CBF-on run only; run the CBF-off cell or the full
-batch to get solid-vs-dashed overlays.
-`experiment_runner` intentionally runs one sweep cell by default; use
-`batch_runner` for the full sweep, or pass `-p run_all_cells:=true` only when
-you want all cells from `experiment_runner`.
-
-### Experiment 1 — CBF on vs off, full sweep (12 cells)
-
-```bash
-ros2 run fabric_sim_experiments batch_runner \
-    --ros-args -p config:=$(ros2 pkg prefix fabric_sim_experiments)/share/fabric_sim_experiments/config/exp1_cbf_on_off.yaml
-```
-
-After the sweep finishes, final overlay figures are regenerated automatically.
-
-### Experiment 2 — Resolution sweep (headless, 5 repeats × 6 resolutions)
-
-```bash
-ros2 run fabric_sim_experiments batch_runner \
-    --ros-args \
-    -p config:=$(ros2 pkg prefix fabric_sim_experiments)/share/fabric_sim_experiments/config/exp2_resolution_sweep.yaml \
-    -p headless:=true
-```
-
-### Experiment 3 — Leader-speed sweep (headless)
-
-```bash
-ros2 run fabric_sim_experiments batch_runner \
-    --ros-args \
-    -p config:=$(ros2 pkg prefix fabric_sim_experiments)/share/fabric_sim_experiments/config/exp3_leader_speed_sweep.yaml \
-    -p headless:=true
-```
-
-### Experiment 4 — Friction sweep (windowed, for manual screenshots)
-
-```bash
-ros2 run fabric_sim_experiments batch_runner \
-    --ros-args -p config:=$(ros2 pkg prefix fabric_sim_experiments)/share/fabric_sim_experiments/config/exp4_friction_sweep.yaml
-```
-
-The runner prints a `===` banner at the start and end of each `contact_mu` value.
-Take IsaacSim viewport screenshots at t = 0 %, 25 %, 50 %, 75 %, 100 % of motion.
-
-### Experiment 5 — Stiffness sweep (windowed)
-
-```bash
-ros2 run fabric_sim_experiments batch_runner \
-    --ros-args -p config:=$(ros2 pkg prefix fabric_sim_experiments)/share/fabric_sim_experiments/config/exp5_stiffness_sweep.yaml
-```
-
----
-
-## Generating figures from CSVs (no simulator required)
-
-### Experiment 1 — 3D trajectories and min-distance
-
-```bash
-python3 -m fabric_sim_experiments.plotting.plot_trajectories_3d runs/exp1_cbf_on_off
-```
-
-Figures are written to `runs/exp1_cbf_on_off/figures/` and symlinked into
-`runs/report_figures/`.
-The plotters skip incomplete/interrupted run directories.
-
-Key outputs per (z, x) cell:
-- `fig_traj3d_*.{png,pdf,svg}` — overlaid solid (CBF on) vs dashed (CBF off) leader/follower trajectories with translucent table box
-- `fig_min_distance_*.{png,pdf,svg}` — min obstacle distance vs time with safety-margin reference line
-
-### Experiment 2 — Resolution timing
-
-```bash
+python3 -m fabric_sim_experiments.plotting.plot_trajectories_3d runs/exp1_cbf_on_off   # fig_traj3d_*, fig_min_distance_*
 python3 -m fabric_sim_experiments.plotting.plot_resolution_timing runs/exp2_resolution_sweep
-```
-
-Outputs:
-- `fig_simulation_performance_vs_cloth_resolution.*` — simulation FPS and simulation step time vs cloth particle count
-
-### Experiment 3 — Speed sweep
-
-```bash
 python3 -m fabric_sim_experiments.plotting.plot_leader_speed_sweep runs/exp3_leader_speed_sweep
+python3 -m fabric_sim_experiments.plotting.plot_min_distance runs/<exp>/<run_id>
 ```
 
-Outputs:
-- `fig_speed_min_distance_traces.*` — minimum obstacle distance vs time for different leader speeds
-
----
-
-## CSV column reference
-
-| File | Key columns |
-|---|---|
-| `corners.csv` | `t, follower_left_x/y/z, follower_right_x/y/z, leader_left_x/y/z, leader_right_x/y/z` |
-| `obstacle_distance.csv` | `t, min_distance, h, closest_idx, normal_x/y/z` |
-| `cbf_debug.csv` | `t, mode, solver_status, h, min_distance, compute_time_ms, stretch_pair_names (pipe-sep), stretch_h_values (pipe-sep), ...` |
-| `sim_perf.csv` | `t, sim_step_ms, sim_fps` |
-| `cmd_vels.csv` | `t, role, topic, vx, vy, vz` |
-| `meta.json` | full run config (sweep params, CBF on/off, timestamps) |
-
-**Corner ordering in `corners.csv`** matches the IsaacSim node's canonical order:
-index 0 = follower_left, 1 = follower_right, 2 = leader_left, 3 = leader_right.
-Older run files with `BL/BR/TL/TR` headers are still accepted by the plotters.
-
-**`h` in `obstacle_distance.csv`** = `min_distance − safety_margin` (positive = safe).
-**`stretch_h_values`** = `d_max − current_dist` for each active pair; h < 0 means violation.
-The safety margin reference line in all figures uses **0.05 m** by default (pass `--safety-margin` to override).
-
----
-
-## Reproducing the ICRA 2024 analogues
-
-| Paper figure | This package |
-|---|---|
-| Fig. 8–9 (fabric trajectories) | `plot_trajectories_3d` — 3D corner trajectory and min-distance figures |
-| Resolution performance figure | `plot_resolution_timing` → `fig_simulation_performance_vs_cloth_resolution.*` |
-
----
-
-## Notes
-
-- All spawned processes (IsaacSim, nodes) are SIGTERM'd then SIGKILL'd after each run; no orphaned instances.
-- Run IDs have the form `YYYYMMDD_HHMMSS_<sha1[:6]>`; reruns never overwrite previous results.
-- Exp 2 & 3 should be run with `-p headless:=true` for clean timing data (no render overhead).
-- Exp 4 & 5 are intentionally windowed — take IsaacSim viewport screenshots manually.
+The runner refuses to start while another simulator publishes
+`/fabric/sim/corners`, and stops every child process group (SIGINT, then
+SIGTERM, then SIGKILL) after each run.

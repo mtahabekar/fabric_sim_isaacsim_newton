@@ -1,206 +1,82 @@
 #!/usr/bin/env python3
+"""Start the Isaac Sim fabric simulation (sensitivity CBF in the loop) and keyboard teleop.
 
+    ros2 launch fabric_sim_bringup full_sim.launch.py
+    ros2 launch fabric_sim_bringup full_sim.launch.py headless:=true isaac_python:=/path/to/python.sh
+    ros2 launch fabric_sim_bringup full_sim.launch.py dry_run:=true   # print the command only
+
+Everything else is configured in config/full_sim.yaml.
+"""
 from __future__ import annotations
 
+import os
+import shlex
+import tempfile
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, EmitEvent, ExecuteProcess, OpaqueFunction
-from launch.actions import RegisterEventHandler, TimerAction
+from launch.actions import (DeclareLaunchArgument, EmitEvent, ExecuteProcess, OpaqueFunction,
+                            RegisterEventHandler, TimerAction)
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-
-BOOLEAN_FLAGS = {
-    "disable_cuda_graph",
-    "external_cbf_enabled",
-}
-
-
-def _load_yaml(path: str) -> dict[str, Any]:
-    with Path(path).expanduser().open("r", encoding="utf-8") as config_file:
-        data = yaml.safe_load(config_file) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Launch config must be a YAML mapping: {path}")
-    return data
-
-
-def _section(config: dict[str, Any], name: str) -> dict[str, Any]:
-    value = config.get(name, {})
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError(f"Config section '{name}' must be a mapping")
-    return value
-
-
-def _bool(value: Any, *, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
-    return bool(value)
-
-
-def _float(value: Any, *, default: float = 0.0) -> float:
-    if value is None:
-        return default
-    return float(value)
-
-
-def _params(config: dict[str, Any], section_name: str) -> dict[str, Any]:
-    section = _section(config, section_name)
-    parameters = section.get("parameters", {})
-    if parameters is None:
-        return {}
-    if not isinstance(parameters, dict):
-        raise ValueError(f"Config section '{section_name}.parameters' must be a mapping")
-    return parameters
-
-
-def _arg_name(key: str) -> str:
-    return "--" + key.replace("_", "-")
-
-
-def _isaac_command(isaac_config: dict[str, Any]) -> list[str]:
-    python_sh = str(isaac_config["python_sh"])
-    script = str(isaac_config["script"])
-    arguments = isaac_config.get("arguments", {})
-    extra_args = isaac_config.get("extra_args", [])
-
-    if not isinstance(arguments, dict):
-        raise ValueError("Config section 'isaac_sim.arguments' must be a mapping")
-    if not isinstance(extra_args, list):
-        raise ValueError("Config section 'isaac_sim.extra_args' must be a list")
-
-    command = [python_sh, script]
-    for key, value in arguments.items():
-        if value is None:
-            continue
-        if key in BOOLEAN_FLAGS:
-            if _bool(value):
-                command.append(_arg_name(key))
-            continue
-        command.extend([_arg_name(key), str(value)])
-
-    command.extend(str(arg) for arg in extra_args)
-    return command
-
-
-def _delayed(action: Any, delay: float) -> Any:
-    if delay <= 0.0:
-        return action
-    return TimerAction(period=delay, actions=[action])
+from fabric_sim_bringup.sim_command import (SIM_ENV, as_bool, cbf_config_path, find_repo_root,
+                                            isaac_command, load_yaml, section)
 
 
 def _launch_setup(context: Any, *args: Any, **kwargs: Any) -> list[Any]:
-    config_file = LaunchConfiguration("config_file").perform(context)
-    config = _load_yaml(config_file)
+    config_file = Path(LaunchConfiguration('config_file').perform(context)).expanduser()
+    config = load_yaml(config_file)
+    launch_cfg = section(config, 'launch')
+    headless = LaunchConfiguration('headless').perform(context)
+    overrides = {} if headless == '' else {'headless': as_bool(headless)}
+    root = find_repo_root(config_file)
+    # Merged CBF JSON (only written when the YAML has cbf.overrides).
+    scratch = Path(tempfile.gettempdir())/f'fabric_sim_launch_{os.getpid()}'
+    cbf_config = cbf_config_path(config, root, scratch)
+    command, cwd = isaac_command(config, root, cbf_config,
+                                 python_sh=LaunchConfiguration('isaac_python').perform(context) or None,
+                                 argument_overrides=overrides)
 
-    launch_config = _section(config, "launch")
-    isaac_config = _section(config, "isaac_sim")
+    if as_bool(LaunchConfiguration('dry_run').perform(context)):
+        print(f'[full_sim] repository: {root}\n[full_sim] working directory: {cwd}\n'
+              f'[full_sim] CBF config: {cbf_config}\n[full_sim] command:\n{shlex.join(command)}')
+        return []
+    if not Path(command[0]).is_file():
+        raise FileNotFoundError(f'Isaac Sim python.sh not found: {command[0]} (set isaac_sim.python_sh, '
+                                'ISAAC_PYTHON_SH or isaac_python:=...)')
 
     actions: list[Any] = []
-
-    if _bool(launch_config.get("start_isaac"), default=True):
-        isaac_process = ExecuteProcess(
-            cmd=_isaac_command(isaac_config),
-            cwd=str(isaac_config.get("working_directory", ".")),
-            name="isaac_sim",
-            output="screen",
-            emulate_tty=True,
-        )
-        actions.append(isaac_process)
-
-        if _bool(launch_config.get("shutdown_on_isaac_exit"), default=True):
-            actions.append(
-                RegisterEventHandler(
-                    OnProcessExit(
-                        target_action=isaac_process,
-                        on_exit=[
-                            EmitEvent(
-                                event=Shutdown(
-                                    reason="IsaacSim process exited",
-                                )
-                            )
-                        ],
-                    )
-                )
-            )
-
-    if _bool(launch_config.get("start_obstacle_distance"), default=True):
-        obstacle_node = Node(
-            package="fabric_obstacle_distance",
-            executable="obstacle_distance_node.py",
-            name="obstacle_distance_node",
-            output="screen",
-            emulate_tty=True,
-            parameters=[_params(config, "obstacle_distance")],
-        )
-        actions.append(
-            _delayed(
-                obstacle_node,
-                _float(launch_config.get("obstacle_start_delay"), default=0.0),
-            )
-        )
-
-    if _bool(launch_config.get("start_cbf_controller"), default=True):
-        cbf_node = Node(
-            package="fabric_cbf_controller",
-            executable="fabric_cbf_controller_node.py",
-            name="fabric_cbf_controller_node",
-            output="screen",
-            emulate_tty=True,
-            parameters=[_params(config, "cbf_controller")],
-        )
-        actions.append(
-            _delayed(
-                cbf_node,
-                _float(launch_config.get("cbf_start_delay"), default=0.0),
-            )
-        )
-
-    if _bool(launch_config.get("start_teleop"), default=True):
-        teleop_node = Node(
-            package="fabric_teleop",
-            executable="fabric_corner_keyboard_teleop",
-            name="fabric_corner_keyboard_teleop",
-            output="screen",
-            emulate_tty=True,
-            parameters=[_params(config, "teleop")],
-        )
-        actions.append(
-            _delayed(
-                teleop_node,
-                _float(launch_config.get("teleop_start_delay"), default=0.0),
-            )
-        )
-
+    if as_bool(launch_cfg.get('start_isaac'), default=True):
+        isaac = ExecuteProcess(cmd=command, cwd=cwd, name='isaac_sim', output='screen',
+                               emulate_tty=True, additional_env=SIM_ENV)
+        actions.append(isaac)
+        if as_bool(launch_cfg.get('shutdown_on_isaac_exit'), default=True):
+            actions.append(RegisterEventHandler(OnProcessExit(
+                target_action=isaac, on_exit=[EmitEvent(event=Shutdown(reason='Isaac Sim exited'))])))
+    if as_bool(launch_cfg.get('start_teleop'), default=True):
+        teleop = Node(package='fabric_teleop', executable='fabric_corner_keyboard_teleop',
+                      name='fabric_corner_keyboard_teleop', output='screen', emulate_tty=True,
+                      parameters=[section(section(config, 'teleop'), 'parameters')])
+        delay = float(launch_cfg.get('teleop_start_delay') or 0.0)
+        actions.append(TimerAction(period=delay, actions=[teleop]) if delay > 0 else teleop)
     return actions
 
 
 def generate_launch_description() -> LaunchDescription:
-    default_config = (
-        Path(get_package_share_directory("fabric_sim_bringup"))
-        / "config"
-        / "full_sim.yaml"
-    )
-
-    return LaunchDescription(
-        [
-            DeclareLaunchArgument(
-                "config_file",
-                default_value=str(default_config),
-                description="Path to the full fabric simulation YAML config.",
-            ),
-            OpaqueFunction(function=_launch_setup),
-        ]
-    )
+    default_config = Path(get_package_share_directory('fabric_sim_bringup'))/'config'/'full_sim.yaml'
+    return LaunchDescription([
+        DeclareLaunchArgument('config_file', default_value=str(default_config),
+                              description='Full simulation YAML config.'),
+        DeclareLaunchArgument('isaac_python', default_value='',
+                              description="Isaac Sim python.sh (overrides ISAAC_PYTHON_SH and the YAML)."),
+        DeclareLaunchArgument('headless', default_value='',
+                              description="'true' runs Kit without a window; empty keeps the YAML value."),
+        DeclareLaunchArgument('dry_run', default_value='false',
+                              description='Print the simulator command and exit.'),
+        OpaqueFunction(function=_launch_setup),
+    ])

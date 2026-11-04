@@ -12,7 +12,7 @@ The previous filter ran the full nonlinear Newton cloth simulator inside the
 control loop (2-3 rollouts plus a derivative through 1,280 unconverged PCG
 iterations per active frame, ~178 ms), switched its barrier on only after the
 cloth had already entered the safety margin, looked one frame ahead, and had no
-stretch protection in its default configuration. The redesigned filter:
+stretch protection in its default configuration. The redesigned filter (now the only controller in this repository):
 
 | | Legacy ray-basin filter | Sensitivity CBF (this work) |
 |---|---|---|
@@ -362,15 +362,22 @@ strain fraction) is avoided by the dimensionless row scaling.
 
 ## 9. Step 7: integration
 
-- `fabric_newton_isaacsim_capsule.py`: `controller` selector (`sensitivity`,
-  `ray_basins`, `predictive`, `bilinear`); mass from `areal_density`; full
-  `(q, v)` from the live Newton state; `warmup_frames`; USD debug geometry
-  throttled to 5 Hz; `OPENBLAS_NUM_THREADS=1` before NumPy loads.
-- `launch_capsule_sim.py` passes `OPENBLAS_NUM_THREADS=1` to Isaac.
-- `config.json`: new defaults; legacy keys kept.
-- Validated in Isaac Kit with ROS 2 and rendering once the installation was
-  mounted (Section 10.5); additionally exercised headless by
-  `tests/test_sensitivity_cbf.py` and `benchmark.py`.
+- `fabric_newton_isaacsim.py` (repository root) is the simulator: Isaac Sim
+  scene, Newton cloth with prescribed gripper patches (`ClothRuntime`), ROS 2
+  I/O and the filter, called synchronously every frame on the full `(q, v)` of
+  the live Newton state; cloth mass from `--areal-density`; `warmup_frames`;
+  USD debug geometry throttled to 5 Hz.
+- One BLAS thread: `OPENBLAS_NUM_THREADS=1` is set before NumPy loads, and
+  NumPy, SciPy and the filter modules are imported *before* Kit starts, because
+  Kit's start-up sets `OPENBLAS_NUM_THREADS=16`: an OpenBLAS loaded afterwards
+  kept 15 worker threads spinning and made every filter stage about 1.7x slower
+  (measured 29.6 ms instead of 18.3 ms p50 in Isaac, November 2026).
+- `controller: "none"` measures the same outputs but applies the nominal
+  command unfiltered (baseline runs).
+- `fabric_sim_bringup` launches the simulator and keyboard teleop from one
+  YAML file (`cbf.config` plus optional `cbf.overrides`).
+- Validated in Isaac Kit with ROS 2 and rendering (Section 10.5); additionally
+  exercised headless by `tests/test_sensitivity_cbf.py` and `benchmark.py`.
 
 ## 10. Results
 
@@ -464,13 +471,18 @@ error, faster approaches), but their benefit is **not demonstrated** here.
 
 ### 10.5 Isaac Sim integration (Kit, ROS 2, rendering)
 
-Run after the Isaac installation became available (Newton 1.2.1, Warp 1.13.0
-bundled - the versions validated above):
+Isaac Sim 6 with its bundled Newton 1.2.1 and Warp 1.13.0 (the versions
+validated above). Runs of the current simulator (`fabric_newton_isaacsim.py
+--headless --smoke-frames ...`, November 2026; `results/isaac_smoke/`):
 
 | Run | Result |
 |---|---|
-| Idle, 120 frames | warm-up for 90 frames, then `feasible` with zero correction; tension 4.8 N (= headless); 15.3 ms per update; JSON debug published on `/fabric/capsule_cbf/debug` |
-| Driven: cloth at 0.85 m, leaders -0.1 m/s from frame 60, 260 frames | minimum clearance over the run 5.42 cm (margin 5 cm: never entered); followers track, then decelerate and lift slightly; tension <= 15 N; 15-22 ms per update; 34 relaxed_soft frames riding the boundary |
+| Idle, 120 frames | warm-up for 90 frames, then `feasible` with zero correction; tension 4.85 N (= headless); 16.2 ms p50 per update; JSON debug published on `/fabric/capsule_cbf/debug` |
+| Driven: cloth at 0.85 m, leaders -0.1 m/s from frame 60, 260 frames | minimum clearance over the run 5.43 cm (margin 5 cm: never entered); followers track, then decelerate and lift slightly; tension <= 16.3 N; 18.3 ms p50 / 22.5 ms p95 per update; 34 relaxed_soft frames riding the boundary |
+| Experiment 1 (ROS leader driver, recorder): descend 0.33 m at 0.1 m/s | CBF on: min clearance 5.12 cm, 0 frames inside the margin, max tension 17.8 N; CBF off: 11 cm *inside* the capsule after a 0.40 m descent |
+
+The October runs of the previous simulator entry point gave the same results
+(5.42 cm, 34 relaxed_soft frames) at 15-22 ms per update.
 
 ![Isaac viewport at the end of the driven smoke run](results/isaac_smoke/driven/viewport.png)
 
@@ -503,7 +515,19 @@ for non-Python subscribers; it is now `null` and the test serializes with
 8. **Coarse-resolution regime.** On a 16x16 cloth with an 8x8 model (elements
    as large as the gripper patch) and a cloth starting 7 cm from the margin,
    stretch rows became infeasible in most frames and clearance yielded by
-   priority (`tests/test_sensitivity_cbf.py` documents this conflict).
+   priority (`tests/test_sensitivity_cbf.py` documents this conflict). In Isaac
+   a 20x20 cloth (Experiment 2) showed the same failure: predicted stretch rows
+   grossly infeasible from 14 cm clearance on, then contact.
+9. **Leader speed.** Validated at 0.1 m/s. Descending 0.33 m on the headless
+   plant: 0.2 m/s gives `relaxed_hard` in 153/159 frames and a minimum barrier
+   of -3.7 cm; 0.4 m/s gives -3.1 cm (no contact). In Isaac at 0.4 m/s the cloth
+   touched the capsule (-6.5 cm). Faster approaches need a longer horizon, a
+   higher follower acceleration bound or a stretch/clearance trade-off other
+   than strict priority.
+10. **Leaders below the capsule top.** Descending 0.40 m from 0.85 m puts the
+    leaders below the capsule top; keeping 5 cm then requires stretching the
+    cloth beyond its limits, so the margin is entered (min clearance 0.8 cm,
+    no contact, tension <= 17.8 N).
 
 ## 12. Reproduction
 
@@ -511,43 +535,41 @@ for non-Python subscribers; it is now `null` and the test serializes with
 python3 -m venv /tmp/newton121 && /tmp/newton121/bin/pip install newton==1.2.1 warp-lang==1.13.0 numpy scipy matplotlib
 export PYTHONPATH=$PWD OPENBLAS_NUM_THREADS=1
 P=/tmp/newton121/bin/python
-$P -m unittest capsule_cbf.tests.test_cloth_model capsule_cbf.tests.test_qp capsule_cbf.tests.test_sensitivity_cbf  # + legacy test modules
+$P -m unittest discover -s capsule_cbf/tests -t .
 R=capsule_cbf/results
 $P -m capsule_cbf.validate_sensitivity --all-variants --output $R/validation/sens_affine_it10.json
 $P -m capsule_cbf.validate_sensitivity --all-variants --plant-iterations 40 --plant-linear-iterations 64 \
    --output $R/validation/sens_affine_it40.json
-$P -m capsule_cbf.benchmark --config capsule_cbf/config.json --controllers nominal,sensitivity --output $R/closed_loop/main
-$P -m capsule_cbf.benchmark --config capsule_cbf/config.json --controllers ray_basins --scenarios descend \
-   --output $R/closed_loop/main_legacy
+$P -m capsule_cbf.benchmark --controllers nominal,sensitivity --output $R/closed_loop/main
 $P -m capsule_cbf.plot_report --results $R --output capsule_cbf/figures
 # Isaac (Kit + ROS 2):
 source /opt/ros/jazzy/setup.bash && source ../../install/setup.bash
-/media/taha/ExtermeLinux/isaacsim/python.sh fabric_newton_isaacsim_capsule.py --cloth-start-z 0.85 \
-   --capsule-smoke-frames 260 --capsule-smoke-leader-z -0.1 --capsule-smoke-output /tmp/capsule-driven
+/media/taha/ExtermeLinux/isaacsim/python.sh fabric_newton_isaacsim.py --headless --cloth-start-z 0.85 \
+   --smoke-frames 260 --smoke-leader-velocity 0 0 -0.1 --smoke-output /tmp/capsule-driven
 ```
 
-`capsule_cbf/tests` has no `__init__.py`; list test modules explicitly. The
-benchmark files written earlier (`results/validation/sens_affine_it*.json`)
-contain all model variants; current `validate_sensitivity.py` runs only the
-default variant unless `--all-variants` is given and also reports tension.
+The legacy ray-basin comparison (`results/closed_loop/main_legacy/`, used by
+`plot_report.py`) and the parameter study were produced with commit `67c3efb`,
+which still contains the legacy controllers; they were removed afterwards.
+`results/validation/sens_affine_it*.json` contain all model variants; the
+current `validate_sensitivity.py` runs only the default variant unless
+`--all-variants` is given and also reports tension.
 
 ## 13. Files
 
-| File | Change |
+| File | Role |
 |---|---|
-| `cloth_model.py` | new: Style3D forces, exact/projected stiffness, resultant, horizon model |
-| `reduced_cloth.py` | new: coarse dynamics with fine sensing and lifting |
-| `sensitivity_cbf.py` | new: controller |
-| `qp.py` | new: exact LDP/NNLS QP with lexicographic relaxation |
-| `scenario.py`, `benchmark.py`, `validate_sensitivity.py`, `plot_report.py` | new: plant fixture, closed-loop benchmark, plant agreement, figures |
-| `strain.py` | KS aggregate with gradient (batched) |
-| `dynamics_sensitivity.py` | element blocks factored out (no behaviour change) |
-| `core.py` | `Settings`: controller selector and new parameters |
-| `config.json` | new defaults |
-| `fabric_newton_isaacsim_capsule.py`, `launch_capsule_sim.py` | integration (Section 9) |
-| `tests/test_cloth_model.py`, `tests/test_qp.py`, `tests/test_sensitivity_cbf.py` | 21 new tests (78 total pass) |
+| `cloth_model.py` | Style3D forces and exact element Jacobian, exact/projected stiffness, resultants, horizon model |
+| `reduced_cloth.py`, `material_grid.py` | coarse dynamics with fine sensing and lifting; coarse Newton model |
+| `sensitivity_cbf.py` | controller |
+| `qp.py` | exact LDP/NNLS QP with lexicographic relaxation |
+| `strain.py`, `capsule.py`, `cloth_state.py` | KS strain, obstacle envelope, cloth state |
+| `settings.py`, `config.json` | parameters and the validated configuration |
+| `newton_runtime.py`, `scenario.py` | Newton stepping with prescribed grippers; headless plant |
+| `benchmark.py`, `validate_sensitivity.py`, `plot_report.py` | closed-loop benchmark, plant agreement, figures |
+| `tests/` | 46 unit tests (`python -m unittest discover -s capsule_cbf/tests -t .`) |
 | `results/`, `figures/` | validation, closed-loop, parameter-study and Isaac smoke data; report figures |
-| `README.md` (root and `capsule_cbf/`) | new default described |
+| `../fabric_newton_isaacsim.py` | Isaac Sim integration (Section 9) |
 
 ## References
 

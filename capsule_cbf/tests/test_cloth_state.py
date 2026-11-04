@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 import numpy as np
 from capsule_cbf.cloth_state import ClothState, particle_state_payload, unpack_cloth_state
-from capsule_cbf.core import Capsule
+from capsule_cbf.capsule import Capsule
 
 
 class ClothStateTests(unittest.TestCase):
@@ -23,7 +23,7 @@ class ClothStateTests(unittest.TestCase):
             ClothState.from_newton(source, 5, 3)
 
     def test_clearance_rates_match_motion_for_every_particle(self):
-        cap = Capsule([0, 0, 0], [.1, .1, .2])
+        cap = Capsule([0, 0, 0], [.1, .1, .2], top_cap_mode='hemisphere')
         q = np.array([[.3, 0, 0], [0, .3, 0], [0, 0, .5], [.2, .2, .4], [-.3, 0, 0]])
         v = np.array([[-.1, 0, 0], [0, .2, 0], [0, 0, -.3], [.1, -.2, .1], [-.2, 0, 0]])
         state = ClothState(q, v)

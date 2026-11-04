@@ -9,6 +9,8 @@ Each update (see SENSITIVITY_CBF_REPORT.md for derivations and sources):
  4. rows  y_k(u) >= exp(-alpha t_k) y_0 + eps_k,  plus h_N + tau dh_N/dt >= eps_N,
     eps_k = online conformal quantile of model residuals + leader-acceleration bound;
  5. hierarchical QP: stretch rows hard, clearance rows soft, follower rate box.
+With settings.controller == 'none' only the measurements are made and the
+nominal command is returned unfiltered (baseline runs).
 No Isaac, ROS or Warp imports.
 """
 import math
@@ -223,8 +225,19 @@ class SensitivityCbfController:
             self.bias = np.clip(self.bias, -cap, cap)
 
     # ------------------------------------------------------------------ update
+    def nominal_command(self, corners, leaders):
+        """Leader velocity plus formation recovery toward the initial follower-leader offsets."""
+        cfg = self.settings
+        error = corners[2:]+self.rest_corners[:2]-self.rest_corners[2:]-corners[:2]
+        if not cfg.vertical_formation_recovery:
+            error[:, 2] = 0
+        return leaders+cfg.formation_gain*error
+
     def update(self, cloth_state, corners, leaders, dt, nominal=None):
-        """nominal: optional task command (2, 3); defaults to leader tracking."""
+        """Return the follower command (2, 3) and a diagnostics dict.
+
+        nominal: optional task command (2, 3); defaults to nominal_command().
+        """
         started = time.perf_counter()
         cfg, red, hz = self.settings, self.red, self.red.horizon
         if hasattr(cloth_state, 'velocities'):
@@ -244,18 +257,26 @@ class SensitivityCbfController:
         timing = {}
         d, surfaces, tension_now, strain_now = self._measure(q)
         h_now = d-cfg.margin
+        nominal = self.nominal_command(corners, leaders) if nominal is None else nominal
+        nominal = np.array(nominal, dtype=float).reshape(2, 3)
+        measured = dict(mode=cfg.controller, **state_debug, min_clearance=float(d.min()),
+                        h_min=float(h_now.min()), initially_safe=bool(h_now.min() >= 0),
+                        tension=tension_now.tolist(), strain_ks=strain_now.tolist(),
+                        nominal_velocity=nominal.tolist())
+        if cfg.controller == 'none':
+            self.u_prev = nominal.copy()
+            self.frame += 1
+            return nominal.copy(), dict(
+                status='unfiltered', **measured, candidate_count=0, total_rows=0, correction=0.,
+                follower_velocity=nominal.tolist(), controller_ms=1000*(time.perf_counter()-started),
+                candidate_indices=[], surfaces=np.empty((0, 3)), rows=np.empty((0, 6)), rhs=np.empty(0))
         qc, vc = red.restrict(q), red.restrict(v)
         self._score(h_now, tension_now, strain_now, qc)
         timing['measure_ms'] = 1000*(time.perf_counter()-started)
 
-        if nominal is None:
-            error = corners[2:]+self.rest_corners[:2]-self.rest_corners[2:]-corners[:2]
-            if not cfg.vertical_formation_recovery:
-                error[:, 2] = 0
-            nominal = leaders+cfg.formation_gain*error
-        nominal = np.array(nominal, dtype=float).reshape(2, 3)
         speed = cfg.max_speed if cfg.max_speed > 0 else np.inf
         nominal *= np.minimum(1., speed/np.maximum(np.linalg.norm(nominal, axis=1), 1e-12))[:, None]
+        measured['nominal_velocity'] = nominal.tolist()
         u_ref = np.clip(self.u_prev, -speed, speed)
         velocity = np.vstack((u_ref, leaders))
 
@@ -352,21 +373,17 @@ class SensitivityCbfController:
         eps_now = {kind: self.conformal[kind].bounds().tolist() for kind in self.conformal}
         residual = rhs-rows@u
         worst = {str(kind): float(residual[kinds == kind].max()) for kind in np.unique(kinds)}
-        debug = dict(status=status, mode='sensitivity_cbf', **state_debug,
-                     min_clearance=float(d.min()), h_min=float(h_now.min()),
-                     initially_safe=bool(h_now.min() >= 0), candidate_count=int(len(idx)),
+        debug = dict(status=status, **measured, candidate_count=int(len(idx)),
                      total_rows=int(keep.sum()), generated_rows=int(len(rhs)),
                      predicted_min_clearance_barrier=predicted_min,
                      horizon_min_clearance_barrier=float(h_min.min()),
                      max_violation=violation, slack_soft=float(slacks[0]), slack_hard=float(slacks[1]),
                      worst_row_residual=worst,
                      correction=float(np.linalg.norm(command-nominal)),
-                     tension=tension_now.tolist(), strain_ks=strain_now.tolist(),
                      bias_norm=float(np.linalg.norm(self.bias)) if self.bias is not None else 0.,
                      conformal=eps_now, controller_ms=1000*(time.perf_counter()-started), **timing,
-                     follower_velocity=command.tolist(), nominal_velocity=nominal.tolist(),
-                     candidate_indices=idx.tolist(), detected_indices=idx.tolist(), basin_indices=[],
-                     surfaces=surfaces[idx], rows=rows[keep], rhs=rhs[keep],
+                     follower_velocity=command.tolist(),
+                     candidate_indices=idx.tolist(), surfaces=surfaces[idx], rows=rows[keep], rhs=rhs[keep],
                      safety_scope=('Linearized coarse prediction with conformal tightening; '
                                    'not a certificate of whole-mesh safety'))
         debug.update(red.info)

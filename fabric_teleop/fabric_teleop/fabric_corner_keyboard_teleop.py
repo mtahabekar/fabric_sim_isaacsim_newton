@@ -27,14 +27,13 @@ Dependencies
 
 Run
 ---
-  python3 fabric_corner_keyboard_teleop.py
-  # with custom speed:
-  ros2 run <pkg> fabric_corner_keyboard_teleop --ros-args -p linear_speed:=0.08
+  ros2 run fabric_teleop fabric_corner_keyboard_teleop --ros-args -p linear_speed:=0.08
 """
 
 import threading
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped
 import numpy as np
@@ -166,13 +165,12 @@ def main() -> None:
     node = FabricCornerTeleop()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.shutdown()
         node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

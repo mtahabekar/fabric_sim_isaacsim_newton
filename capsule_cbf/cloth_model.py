@@ -4,13 +4,48 @@ Pure NumPy/SciPy at runtime; Newton is touched only by ``from_newton``.
 Forces reproduce Newton's eval_stretch_kernel and eval_bend_kernel. The
 horizon model is linearly implicit Euler (Baraff and Witkin, 1998) with one
 frozen, PSD-projected tangent stiffness per control update. See
-SENSITIVITY_CBF_REPORT.md for the derivation.
+SENSITIVITY_CBF_REPORT.md, sections 4-5, for the derivation.
 """
 import numpy as np
 from scipy.linalg import cho_solve_banded, cholesky_banded
 from scipy.sparse import coo_matrix, csr_matrix, kron, identity
 from scipy.sparse.csgraph import reverse_cuthill_mckee
-from .dynamics_sensitivity import stretch_force_blocks
+
+
+def stretch_force_blocks(q, faces, rest, areas, stiffness):
+    """Exact d f_i/d x_j of Newton's eval_stretch_kernel, shape (triangle, i, j, xyz, xyz).
+
+    The shear force uses NORMALIZED material directions, as the installed
+    kernel does; it is not a conventional shear-energy Hessian.
+    """
+    coeff = np.concatenate((-rest.sum(axis=1)[:, None, :], rest), axis=1)
+    fu = np.einsum('tix,ti->tx', q[faces], coeff[:, :, 0])
+    fv = np.einsum('tix,ti->tx', q[faces], coeff[:, :, 1])
+    lu, lv = np.linalg.norm(fu, axis=1), np.linalg.norm(fv, axis=1)
+    if np.any(lu <= 1e-6) or np.any(lv <= 1e-6):
+        raise ValueError('Degenerate triangle: a material direction has collapsed')
+    u, v = fu/lu[:, None], fv/lv[:, None]
+    eye = np.eye(3)[None]
+    uu, vv = u[:, :, None]*u[:, None, :], v[:, :, None]*v[:, None, :]
+    du, dv = (eye-uu)/lu[:, None, None], (eye-vv)/lv[:, None, None]
+    tu = uu+(lu-1)[:, None, None]*du
+    tv = vv+(lv-1)[:, None, None]*dv
+    cosine = np.einsum('ti,ti->t', u, v)
+    blocks = np.empty((len(faces), 3, 3, 3, 3))
+    for i in range(3):
+        ai, bi = coeff[:, i, 0], coeff[:, i, 1]
+        w = bi[:, None]*u+ai[:, None]*v
+        for j in range(3):
+            aj, bj = coeff[:, j, 0], coeff[:, j, 1]
+            dc = (aj[:, None]*np.einsum('txy,ty->tx', du, v)
+                  +bj[:, None]*np.einsum('txy,ty->tx', dv, u))
+            shear = w[:, :, None]*dc[:, None, :]+cosine[:, None, None]*(
+                (bi*aj)[:, None, None]*du+(ai*bj)[:, None, None]*dv)
+            blocks[:, i, j] = -areas[:, None, None]*(
+                (stiffness[:, 0]*ai*aj)[:, None, None]*tu
+                +(stiffness[:, 1]*bi*bj)[:, None, None]*tv
+                +stiffness[:, 2, None, None]*shear)
+    return blocks
 
 
 class ClothMechanics:

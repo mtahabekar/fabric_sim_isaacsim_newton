@@ -1,117 +1,132 @@
 {
-  "status": "feasible",
-  "mode": "sensitivity_cbf",
-  "state_velocity_available": true,
-  "min_clearance": 0.5121329664628012,
-  "h_min": 0.46213296646280116,
-  "initially_safe": true,
-  "candidate_count": 0,
-  "total_rows": 80,
-  "generated_rows": 80,
-  "predicted_min_clearance_barrier": Infinity,
-  "horizon_min_clearance_barrier": 0.46213296646280116,
-  "max_violation": 0.0,
-  "slack_soft": 0.0,
-  "slack_hard": 0.0,
-  "worst_row_residual": {
-    "strain": -2.0286983516142887,
-    "tension": -1.9129485648173272
+  "frames": 120,
+  "controller": "sensitivity",
+  "run_min_clearance": 0.5119791833445023,
+  "run_max_tension": 4.848446896797474,
+  "run_max_correction": 0.0,
+  "status_counts": {
+    "warmup": 90,
+    "feasible": 30
   },
-  "correction": 0.0,
-  "tension": [
-    4.674588644496227,
-    4.584415128641533,
-    4.584416560683314,
-    4.675162792516367
-  ],
-  "strain_ks": [
-    0.18738274595167298,
-    0.18692178376237895,
-    0.18692213995893403,
-    0.1873939385153255
-  ],
-  "bias_norm": 0.11876938133819619,
-  "conformal": {
-    "clearance": [
-      0.002,
-      0.002,
-      0.002,
-      0.002,
-      0.002,
-      0.002,
-      0.002,
-      0.002,
-      0.002,
-      0.002
-    ],
+  "cbf_ms_p50": 16.156833499735512,
+  "cbf_ms_p95": 16.780467150192635,
+  "cbf_ms_max": 17.45993799977441,
+  "frame_ms_p50": 28.772698500233673,
+  "final": {
+    "status": "feasible",
+    "mode": "sensitivity",
+    "state_velocity_available": true,
+    "min_clearance": 0.5121302215143603,
+    "h_min": 0.4621302215143603,
+    "initially_safe": true,
     "tension": [
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0
+      4.675233657397448,
+      4.58477927144482,
+      4.584400412584465,
+      4.675010751704291
     ],
-    "strain": [
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0,
-      0.0
-    ]
-  },
-  "controller_ms": 16.17409100072109,
-  "measure_ms": 2.856158000213327,
-  "linearize_ms": 3.9993030004552566,
-  "predict_ms": 4.915061999781756,
-  "rows_ms": 4.0423609971185215,
-  "qp_ms": 0.05673099803971127,
-  "follower_velocity": [
-    [
-      0.0,
-      0.0,
-      0.0
+    "strain_ks": [
+      0.18739253081088517,
+      0.18693297084734561,
+      0.18692387935063073,
+      0.18738820818856164
     ],
-    [
-      0.0,
-      0.0,
-      0.0
-    ]
-  ],
-  "nominal_velocity": [
-    [
-      0.0,
-      0.0,
-      0.0
+    "nominal_velocity": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
     ],
-    [
-      0.0,
-      0.0,
-      0.0
-    ]
-  ],
-  "safety_scope": "Linearized coarse prediction with conformal tightening; not a certificate of whole-mesh safety",
-  "prediction_model": "coarse",
-  "live_particles": 3249,
-  "prediction_particles": 289,
-  "prediction_triangles": 512,
-  "prediction_grid_shape": [
-    16,
-    16
-  ],
-  "model_substeps": 1,
-  "stride": 2,
-  "jacobian": "affine",
-  "run_min_clearance": 0.5119801401535978,
-  "recovery_frames": 0,
-  "run_max_correction": 0.0
+    "candidate_count": 0,
+    "total_rows": 80,
+    "generated_rows": 80,
+    "predicted_min_clearance_barrier": null,
+    "horizon_min_clearance_barrier": 0.4621302215143603,
+    "max_violation": 0.0,
+    "slack_soft": 0.0,
+    "slack_hard": 0.0,
+    "worst_row_residual": {
+      "strain": -2.02870186599575,
+      "tension": -1.912939718989426
+    },
+    "correction": 0.0,
+    "bias_norm": 0.11885541525836713,
+    "conformal": {
+      "clearance": [
+        0.002,
+        0.002,
+        0.002,
+        0.002,
+        0.002,
+        0.002,
+        0.002,
+        0.002,
+        0.002,
+        0.002
+      ],
+      "tension": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "strain": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "controller_ms": 16.180263000023842,
+    "measure_ms": 2.7708580000762595,
+    "linearize_ms": 3.9411969992215745,
+    "predict_ms": 5.075537000266195,
+    "rows_ms": 4.042081999614311,
+    "qp_ms": 0.06187899998622015,
+    "follower_velocity": [
+      [
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "safety_scope": "Linearized coarse prediction with conformal tightening; not a certificate of whole-mesh safety",
+    "prediction_model": "coarse",
+    "live_particles": 3249,
+    "prediction_particles": 289,
+    "prediction_triangles": 512,
+    "prediction_grid_shape": [
+      16,
+      16
+    ],
+    "model_substeps": 1,
+    "stride": 2,
+    "jacobian": "affine",
+    "frame": 119,
+    "sim_time": 1.9833333333333312,
+    "warmup": false
+  }
 }
