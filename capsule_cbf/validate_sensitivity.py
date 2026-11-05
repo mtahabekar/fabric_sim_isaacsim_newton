@@ -2,7 +2,7 @@
 
 Reference sensitivities are central differences of full 56x56 Newton rollouts
 (8 substeps, 10 PD / 16 PCG iterations) over the whole horizon. Run with a
-Newton 1.2.x environment; see SENSITIVITY_CBF_REPORT.md.
+Newton 1.6 environment (Isaac Sim 6.2); see SENSITIVITY_CBF_REPORT.md.
 """
 import argparse
 import json

@@ -78,12 +78,19 @@ because stretch has priority, clearance yields:
 
 ## Tests and tools
 
-Run from the repository root in an environment with `newton==1.2.1`,
-`warp-lang==1.13.0`, `numpy`, `scipy` (Newton-dependent tests skip without it):
+Run from the repository root in an environment with `newton==1.6.1`,
+`warp-lang==1.17.0`, `numpy`, `scipy` (Newton-dependent tests skip without it).
+Isaac Sim 6.2's own interpreter and libraries work without starting Kit:
 
 ```bash
-export PYTHONPATH=$PWD OPENBLAS_NUM_THREADS=1
-python -m unittest discover -s capsule_cbf/tests -t .        # 46 tests
+ISAAC=/media/taha/ExtermeLinux/isaacsim6.2
+export PYTHONPATH=$PWD:$ISAAC/extscache/omni.warp.core-1.17.0+lx64:$ISAAC/exts/isaacsim.pip.newton/pip_prebundle:$ISAAC/exts/omni.pip.compute/pip_prebundle:$(ls -d $ISAAC/extscache/omni.kit.pip_archive-*/pip_prebundle)
+alias python=$ISAAC/kit/python/bin/python3
+```
+
+```bash
+export PYTHONPATH=$PWD:$PYTHONPATH OPENBLAS_NUM_THREADS=1
+python -m unittest discover -s capsule_cbf/tests -t .        # 51 tests
 python -m capsule_cbf.benchmark --output /tmp/bench           # nominal vs sensitivity, 3 scenarios
 python -m capsule_cbf.validate_sensitivity --output /tmp/sens.json [--all-variants]
 python -m capsule_cbf.plot_report --results capsule_cbf/results --output /tmp/figures   # needs matplotlib

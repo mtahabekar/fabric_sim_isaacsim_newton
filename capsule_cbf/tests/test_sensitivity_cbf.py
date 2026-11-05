@@ -2,7 +2,10 @@ import json
 import math
 import unittest
 import numpy as np
-from capsule_cbf.sensitivity_cbf import ConformalBound, local_minima, rest_rings
+from collections import deque
+from capsule_cbf.sensitivity_cbf import (STRAIN, TENSION, ConformalBound, SensitivityCbfController,
+                                         local_minima, rest_rings)
+from capsule_cbf.settings import Settings
 
 try:
     import warp as wp
@@ -34,6 +37,20 @@ class PureHelpersTest(unittest.TestCase):
         bound.add(0, np.arange(10., 49.))
         rank = math.ceil(50*.9)  # n=49
         self.assertEqual(bound.bound(0), float(rank-1))
+
+    def test_stretch_residuals_clipped_to_physical_range(self):
+        # A linear command correction predicting negative tension (y above the
+        # limit) or a negative KS strain must not count as model error.
+        ctrl = SensitivityCbfController.__new__(SensitivityCbfController)
+        ctrl.settings, ctrl.frame, ctrl.observed = Settings(), 5, deque()
+        ctrl.conformal = {kind: ConformalBound(1, 10, .9, fallback=0., minimum=1) for kind in (TENSION, STRAIN)}
+        ctrl.history = {f: np.full(12, .1) for f in range(5)}
+        grad = np.full(12, 100.)  # +10 per frame of the 0.1 m/s change below
+        ctrl.pending = {5: [(TENSION, 0, 0, 3, 15., grad, np.zeros(12)),
+                            (STRAIN, 0, 0, 3, .8, grad, np.zeros(12))]}
+        ctrl._score(None, np.array([4., 0, 0, 0]), np.array([.2, 0, 0, 0]), None)
+        self.assertAlmostEqual(ctrl.conformal[TENSION].bound(0), 4.)  # 20 - (20 - 4)
+        self.assertAlmostEqual(ctrl.conformal[STRAIN].bound(0), .2)   # 1 - (1 - 0.2)
 
 
 @unittest.skipIf(wp is None, 'Newton/Warp unavailable')
@@ -112,7 +129,8 @@ class ControllerOnNewtonTest(unittest.TestCase):
         # Starting 7 cm from the margin while leaders descend, avoiding the
         # capsule would require stretching the cloth: a physical conflict.
         # Stretch has priority; the yielded clearance must be reported.
-        plant = self.build(.66)
+        # 0.54 m: settled h is about 7.5 cm under the default (scale 2) top cap.
+        plant = self.build(.54)
         ctrl = self.controller(plant)
         leaders = np.array([[0., 0., -.1], [0., 0., -.1]])
         engaged, tension, statuses = None, [], set()

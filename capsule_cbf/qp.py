@@ -9,6 +9,14 @@ QP, cf. Kanoun et al. 2011; Escande et al. 2014): a small LP finds the least
 uniform violation of the hard group under the input box, then of the soft group
 with the relaxed hard rows enforced; the LDP then returns the minimum-
 intervention command within those relaxed rows.
+
+An infeasible hard group is relaxed by its least violation plus
+`hard_tolerance`. Relaxed exactly to the minimum, the feasible set shrinks to
+the LP's box vertex: when the followers have little authority over the
+violated rows (e.g. a leader stretching the cloth on its own), they were driven
+to the input bounds to win a fraction of a unit and kept chattering there,
+even after the leaders stopped. The tolerance lets the LDP stay near the
+nominal command instead.
 """
 import numpy as np
 from scipy.optimize import linprog, nnls
@@ -49,10 +57,11 @@ def least_violation(a, b, lower, upper, fixed_rows=None, fixed_rhs=None):
     return float(result.x[-1]) if result.status == 0 else None
 
 
-def safety_qp(center, rows, rhs, groups, lower, upper, tol=1e-7):
+def safety_qp(center, rows, rhs, groups, lower, upper, tol=1e-7, hard_tolerance=0.):
     """Solve the filter QP; groups[i] is 0 (soft) or 1 (hard) for row i.
 
     Rows should be dimensionless so a group's uniform slack is meaningful.
+    hard_tolerance (row units, >= 0): extra relaxation of an infeasible hard group.
     Returns (u, status, slacks, violation). status: 'feasible',
     'relaxed_soft' / 'relaxed_hard' (most important relaxed group) or
     'solver_failure' (box-clipped center; never reported as safe).
@@ -75,7 +84,7 @@ def safety_qp(center, rows, rhs, groups, lower, upper, tol=1e-7):
         hard, soft = groups == 1, groups == 0
         if hard.any():
             slacks[1] = least_violation(a[hard], b[hard], lower, upper) or 0.
-            relaxed[hard] -= slacks[1]
+            relaxed[hard] -= slacks[1]+(hard_tolerance if slacks[1] > tol else 0.)
         if soft.any():
             s = least_violation(a[soft], b[soft], lower, upper, a[hard], relaxed[hard])
             slacks[0] = 0. if s is None else s

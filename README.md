@@ -36,14 +36,16 @@ Isaac Sim + Newton cloth (fabric_newton_isaacsim.py), every frame:
 
 ## Requirements
 
-- Isaac Sim 6 with its bundled Newton 1.2.1 and Warp 1.13 (default path
-  `/media/taha/ExtermeLinux/isaacsim/python.sh`; override with the
+- Isaac Sim 6.2 with its bundled Newton 1.6.1 and Warp 1.17 (default path
+  `/media/taha/ExtermeLinux/isaacsim6.2/python.sh`; override with the
   `ISAAC_PYTHON_SH` environment variable or `isaac_python:=...`).
 - ROS 2 Jazzy and `pynput` for the keyboard teleop.
-- For headless tests and benchmarks without Isaac: Python 3.12 with
-  `newton==1.2.1 warp-lang==1.13.0 numpy scipy` (plus `matplotlib` for
-  figures). Newton 1.0.x does not work (its Style3D solver needs a manual
-  precompute and crashes).
+- For headless tests and benchmarks without Kit: Python 3.12 with
+  `newton==1.6.1 warp-lang==1.17.0 numpy scipy` (plus `matplotlib` for
+  figures), or Isaac's own interpreter and libraries (see
+  [capsule_cbf/README.md](capsule_cbf/README.md#tests-and-tools)). Newton
+  older than 1.6 is not supported: its Style3D bending force differs (see
+  the Configuration section) and 1.0.x crashes.
 
 ## Build and run
 
@@ -80,7 +82,7 @@ track the leaders; the filter then takes over (`warmup_frames`).
 
 ```bash
 cd src/fabric_sim_isaacsim_newton
-/media/taha/ExtermeLinux/isaacsim/python.sh fabric_newton_isaacsim.py --headless \
+/media/taha/ExtermeLinux/isaacsim6.2/python.sh fabric_newton_isaacsim.py --headless \
     --cloth-start-z 0.85 --smoke-frames 260 --smoke-leader-velocity 0 0 -0.1 --smoke-output /tmp/smoke
 ```
 
@@ -99,8 +101,16 @@ contact, solver iterations, `headless`), the CBF settings file
 Every CBF setting is documented in `capsule_cbf/settings.py`. The capsule is
 built from the table half extents, so obstacle and filter always agree.
 
-Newton 1.2.1's Style3D solver ignores `tri_ka`, `tri_kd`, `edge_kd` and
-`contact_radius`; they are kept as model parameters only.
+Newton 1.6's Style3D solver ignores `tri_ka`, `tri_kd`, `edge_kd` and
+`contact_radius`; they are kept as model parameters only. `contact_margin`
+is passed to Newton as `soft_contact_gap` (detection distance on top of the
+particle radius).
+
+Newton 1.6 changed Style3D bending to the Bergou et al. (2006) quadratic
+model, force `-(3 k / A) w wᵀ x`, which is linear in `edge_ke`; 1.2.1 applied
+`(k / A)² w wᵀ` with a rest area 2/3 as large. With the default `edge_ke` on
+the 56x56 grid, bending is therefore about 7x softer than in runs made with
+Isaac Sim 6.0 / Newton 1.2.1. Stretch, contact and gravity are unchanged.
 
 ## ROS 2 interface
 

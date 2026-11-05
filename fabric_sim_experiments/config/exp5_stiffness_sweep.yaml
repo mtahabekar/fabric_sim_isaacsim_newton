@@ -2,7 +2,9 @@
 #
 # Same drag-over-the-table scenario as Exp. 4 with low / mid (default) / high
 # stretch and bending stiffness. Unfiltered for the reason given in Exp. 4.
-# tri_ka, tri_kd and edge_kd are not read by Newton 1.2.1's Style3D solver.
+# tri_ka, tri_kd and edge_kd are not read by Newton 1.6's Style3D solver.
+# Newton 1.6 bending is linear in edge_ke (1.2.1 applied (k/A)^2), so the same
+# edge_ke values give much softer bending than in pre-1.6 runs.
 # Windowed: the runner prints a banner per preset for manual screenshots.
 
 exp_name: exp5_stiffness_sweep

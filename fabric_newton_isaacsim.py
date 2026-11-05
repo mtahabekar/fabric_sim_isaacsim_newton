@@ -59,6 +59,9 @@ def build_parser():
     a('--table-hy', type=float, default=0.22, help='Table half size Y (m).')
     a('--table-hz', type=float, default=0.16, help='Table half size Z (m).')
     a('--gripper-size', type=int, default=3, help='Gripper patch side in particles (3 -> 3x3).')
+    a('--gripper-inset', type=float, default=0.05,
+      help='Before frame 0, move every gripper this far (m) toward the cloth center along x and y, '
+           'so the cloth hangs with natural sag instead of being stretched flat; 0 keeps the corners.')
     a('--substeps', type=int, default=8, help='Solver substeps per 60 Hz frame.')
     a('--iterations', type=int, default=10, help='Style3D nonlinear (PD) iterations.')
     a('--linear-iterations', type=int, default=16, help='Style3D PCG iterations.')
@@ -66,15 +69,15 @@ def build_parser():
     a('--tri-ke-weft', type=float, default=3.0e4, help='Weft stretch stiffness.')
     a('--tri-ke-warp', type=float, default=3.0e4, help='Warp stretch stiffness.')
     a('--tri-ke-shear', type=float, default=6.0e3, help='Shear stiffness.')
-    a('--tri-ka', type=float, default=5.0e3, help='Area stiffness (stored; unused by Style3D 1.2.1).')
-    a('--tri-kd', type=float, default=5.0e-5, help='Triangle damping (stored; unused by Style3D 1.2.1).')
+    a('--tri-ka', type=float, default=5.0e3, help='Area stiffness (stored; unused by Style3D, Newton 1.6).')
+    a('--tri-kd', type=float, default=5.0e-5, help='Triangle damping (stored; unused by Style3D, Newton 1.6).')
     a('--edge-ke-weft', type=float, default=2.0e-3, help='Weft bending stiffness.')
     a('--edge-ke-warp', type=float, default=1.0e-3, help='Warp bending stiffness.')
     a('--edge-ke-shear', type=float, default=5.0e-4, help='Shear bending stiffness.')
-    a('--edge-kd', type=float, default=1.0e-5, help='Bending damping (stored; unused by Style3D 1.2.1).')
+    a('--edge-kd', type=float, default=1.0e-5, help='Bending damping (stored; unused by Style3D, Newton 1.6).')
     a('--contact-radius', type=float, default=0.01,
-      help='Soft contact radius (stored; unused by the 1.2.1 collision pipeline).')
-    a('--contact-margin', type=float, default=0.012, help='Soft contact margin (m).')
+      help='Soft contact radius (stored; unused by the Newton 1.6 collision pipeline).')
+    a('--contact-margin', type=float, default=0.012, help='Soft contact gap (m): detection distance added to the particle radius.')
     a('--contact-ke', type=float, default=4.0e3, help='Soft contact stiffness.')
     a('--contact-kd', type=float, default=1.0e-2, help='Soft contact damping.')
     a('--contact-mu', type=float, default=2.0, help='Soft contact friction.')
@@ -106,12 +109,14 @@ from isaacsim import SimulationApp  # noqa: E402
 simulation_app = SimulationApp({'headless': ARGS.headless})
 os.environ['OPENBLAS_NUM_THREADS'] = BLAS_THREADS  # undo Kit's override for anything loaded later
 
+import omni.kit.app  # noqa: E402
 import omni.usd  # noqa: E402
 from pxr import Gf, Sdf, UsdGeom, UsdLux, Vt  # noqa: E402
 import warp as wp  # noqa: E402
-from isaacsim.core.utils.extensions import enable_extension  # noqa: E402
 
-enable_extension('isaacsim.ros2.bridge')
+# Isaac Sim 6.2 moved isaacsim.core.utils to extsDeprecated; use Kit directly.
+if not omni.kit.app.get_app().get_extension_manager().set_extension_enabled_immediate('isaacsim.ros2.bridge', True):
+    raise RuntimeError('Cannot enable isaacsim.ros2.bridge')
 simulation_app.update()
 
 import rclpy  # noqa: E402
@@ -189,6 +194,7 @@ class FabricRosIo:
         self.frame_id, self.cmd_timeout = frame_id, float(cmd_timeout)
         self.leader_cmds = np.zeros((2, 3), dtype=np.float32)
         self.leader_stamps = [None, None]
+        self.callbacks = 0  # leader messages handled, to drain the queue each frame
         for i, side in enumerate(('left', 'right')):
             self.node.create_subscription(TwistStamped, f'/fabric/leader_{side}/cmd_vel',
                                           lambda msg, i=i: self._leader_cb(i, msg), 10)
@@ -210,10 +216,18 @@ class FabricRosIo:
         v = msg.twist.linear
         self.leader_cmds[i] = (v.x, v.y, v.z)
         self.leader_stamps[i] = time.monotonic()
+        self.callbacks += 1
 
-    def spin_once(self):
-        # A tiny bounded wait keeps ROS callbacks inside the frame loop.
-        rclpy.spin_once(self.node, timeout_sec=0.001)
+    def spin_once(self, max_callbacks=64):
+        # rclpy.spin_once runs ONE callback. Two 30 Hz leader topics outpace a
+        # ~30 fps frame, so one callback per frame left stale commands queued:
+        # leaders kept moving after the key was released and the two leaders
+        # briefly received different commands. Drain the queue without waiting.
+        for _ in range(max_callbacks):
+            handled = self.callbacks
+            rclpy.spin_once(self.node, timeout_sec=0.0)
+            if self.callbacks == handled:
+                break
 
     def leader_commands(self):
         now, out = time.monotonic(), np.zeros((2, 3), dtype=np.float32)
@@ -334,12 +348,16 @@ class FabricSimulation:
         self.model.soft_contact_ke = a.contact_ke
         self.model.soft_contact_kd = a.contact_kd
         self.model.soft_contact_mu = a.contact_mu
-        # SolverStyle3D (Newton 1.2.x) precomputes its PD matrix in __init__.
+        # SolverStyle3D (Newton 1.6) precomputes its PD matrix in __init__.
         self.use_cuda_graph = not a.disable_cuda_graph
         self.motion = ClothRuntime(self.model, self.patch, self.patch_corners, self.patch_offsets,
                                    self.substeps, self.frame_dt/self.substeps, a.iterations,
                                    a.linear_iterations, capture=self.use_cuda_graph)
-        self.initial_corners = self.motion.state.particle_q.numpy()[self.corner_indices].astype(float)
+        corners = self.motion.state.particle_q.numpy()[self.corner_indices].astype(float)
+        # Pre-roll (not counted as simulation frames): bring the grippers in and
+        # let the cloth settle; these become the initial corner positions and the
+        # CBF formation reference.
+        self.initial_corners = self.motion.inset_corners(corners, a.gripper_inset, self.frame_dt)
         self.corner_targets = self.initial_corners.copy()
 
     def _gripper_patches(self, rest):
@@ -369,7 +387,8 @@ class FabricSimulation:
 
     def _build_controller(self):
         cfg = self.settings
-        self.capsule = Capsule([0., 0., self.args.table_hz], self.table_half, cfg.top_cap_mode)
+        self.capsule = Capsule([0., 0., self.args.table_hz], self.table_half, cfg.top_cap_mode,
+                               cfg.top_cap_radius_scale)
         reduced = ReducedCloth(
             self.model, self.patch, self.patch_corners, self.patch_offsets, self.frame_dt,
             particle_start=self.cloth_start, particle_count=self.cloth_count,
@@ -525,12 +544,15 @@ class FabricSimulation:
         (output/'diagnostics.json').write_text(json.dumps(self.summary(), indent=2))
         try:
             from omni.kit.viewport.utility import capture_viewport_to_file, get_active_viewport
-            from isaacsim.core.utils.viewports import set_camera_view
+            from omni.kit.viewport.utility.camera_state import ViewportCameraState
             import asyncio
-            set_camera_view(eye=np.array([1.5, -1.8, 1.25]), target=np.array([0., 0., .4]))
+            viewport = get_active_viewport()
+            camera = ViewportCameraState('/OmniverseKit_Persp', viewport)
+            camera.set_position_world(Gf.Vec3d(1.5, -1.8, 1.25), True)
+            camera.set_target_world(Gf.Vec3d(0., 0., .4), True)
             for _ in range(10):
                 simulation_app.update()
-            capture = capture_viewport_to_file(get_active_viewport(), str(output/'viewport.png'))
+            capture = capture_viewport_to_file(viewport, str(output/'viewport.png'))
             done = asyncio.ensure_future(capture.wait_for_result())
             for _ in range(120):
                 simulation_app.update()
@@ -543,15 +565,19 @@ class FabricSimulation:
             print(f'[fabric_sim] viewport capture skipped: {error}')
 
     def _print_summary(self):
-        a, cfg, info = self.args, self.settings, self.controller.red.info
+        a, cfg, info, cap = self.args, self.settings, self.controller.red.info, self.capsule
         print(f'[fabric_sim] cloth {a.grid_x}x{a.grid_y} cells ({self.cloth_count} particles), '
               f'areal density {a.areal_density} kg/m^2 -> {self.mass_per_particle:.3e} kg/particle, '
               f'center ({a.cloth_center_x:.3f}, {a.cloth_center_y:.3f}, {a.cloth_start_z:.3f}) m')
         print(f'[fabric_sim] solver: {self.substeps} substeps, {a.iterations} PD / {a.linear_iterations} PCG '
               f'iterations, CUDA graph {"on" if self.motion.graph is not None else "off"}; '
-              f'gripper patches {a.gripper_size}x{a.gripper_size} ({len(self.patch)} pinned particles)')
+              f'gripper patches {a.gripper_size}x{a.gripper_size} ({len(self.patch)} pinned particles), '
+              f'inset {a.gripper_inset:.3f} m; initial corners (x, y) '
+              f'{np.round(self.initial_corners[:, :2], 3).tolist()}')
         print(f'[fabric_sim] CBF controller={cfg.controller}, capsule radius {self.capsule.radius:.4f} m, '
-              f'top={cfg.top_cap_mode}, margin {cfg.margin} m, tension limit {cfg.tension_limit} N, '
+              f'top={cfg.top_cap_mode} (sphere radius {cap.top_sphere_radius:.3f} m, '
+              f'apex z {cap.center[2]+cap.top_center+cap.top_sphere_radius:.3f} m), '
+              f'margin {cfg.margin} m, tension limit {cfg.tension_limit} N, '
               f'strain={cfg.strain_enabled}, warm-up {cfg.warmup_frames} frames; prediction model: {info}')
         if KIT_ARGS:
             print(f'[fabric_sim] arguments passed to Kit: {KIT_ARGS}')

@@ -17,7 +17,7 @@ from typing import Any, Mapping
 import yaml
 
 SIM_SCRIPT = 'fabric_newton_isaacsim.py'
-DEFAULT_ISAAC_PYTHON = '/media/taha/ExtermeLinux/isaacsim/python.sh'
+DEFAULT_ISAAC_PYTHON = '/media/taha/ExtermeLinux/isaacsim6.2/python.sh'
 # Simulator switches without a value: `headless: true` -> `--headless`.
 BOOLEAN_FLAGS = frozenset({'disable_cuda_graph', 'headless'})
 # One BLAS thread: the filter's small LAPACK calls stall on thread hand-off.

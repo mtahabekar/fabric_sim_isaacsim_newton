@@ -10,7 +10,7 @@ import numpy as np
 import warp as wp
 import newton
 from newton.solvers import style3d
-from .capsule import Capsule
+from .capsule import DEFAULT_TOP_RADIUS_SCALE, Capsule
 from .newton_runtime import ClothRuntime
 
 FRAME_DT = 1/60
@@ -57,7 +57,10 @@ def mass_per_particle(areal_density, grid, size=.84):
 
 def build_plant(device='cuda:0', grid=56, areal_density=.2, cloth_z=.85, substeps=8,
                 iterations=10, linear_iterations=16, tri_ke=(3.e4, 3.e4, 6.e3),
-                edge_ke=(.002, .001, .0005), capture=True, top_cap_mode='centered_sphere'):
+                edge_ke=(.002, .001, .0005), capture=True, top_cap_mode='centered_sphere', inset=0.,
+                top_radius_scale=DEFAULT_TOP_RADIUS_SCALE):
+    """inset > 0: grippers pre-rolled that far toward the center along x and y (the
+    Isaac default is 0.05 m; plant.starts then holds the inset corner positions)."""
     b = newton.ModelBuilder(up_axis=newton.Axis.Z)
     newton.solvers.SolverStyle3D.register_custom_attributes(b)
     shape = newton.ModelBuilder.ShapeConfig(density=0., mu=.8, ke=5.e5, kd=10.)
@@ -87,6 +90,7 @@ def build_plant(device='cuda:0', grid=56, areal_density=.2, cloth_z=.85, substep
     model.soft_contact_margin = .012
     runtime = ClothRuntime(model, patch, ids, offsets, substeps, FRAME_DT/substeps, iterations,
                            linear_iterations, capture=capture and wp.get_device(device).is_cuda)
-    capsule = Capsule([0, 0, .16], [.22, .22, .16], top_cap_mode=top_cap_mode)
+    capsule = Capsule([0, 0, .16], [.22, .22, .16], top_cap_mode, top_radius_scale)
+    starts = runtime.inset_corners(rest[corners], inset, FRAME_DT)
     return Plant(model, runtime, capsule, corners, np.asarray(patch), np.asarray(ids),
-                 np.asarray(offsets, dtype=float), rest, rest[corners].copy())
+                 np.asarray(offsets, dtype=float), rest, starts)

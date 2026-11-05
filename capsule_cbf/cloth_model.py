@@ -93,8 +93,10 @@ class ClothMechanics:
         cot = model.style3d.edge_bending_cot.numpy()[valid].astype(float)
         weights = np.column_stack((-cot[:, 0]-cot[:, 2], -cot[:, 1]-cot[:, 3],
                                    cot[:, 2]+cot[:, 3], cot[:, 0]+cot[:, 1]))
-        weights *= (model.edge_bending_properties.numpy()[valid, 0]
-                    /model.style3d.edge_rest_area.numpy()[valid])[:, None]
+        # Newton >= 1.6 eval_bend_kernel: f = -(3 k / A) w w^T x (Bergou et al.
+        # 2006); 1.2.x applied (k / A)^2 w w^T. Q = weights weights^T below.
+        weights *= np.sqrt(3.*model.edge_bending_properties.numpy()[valid, 0]
+                           /model.style3d.edge_rest_area.numpy()[valid])[:, None]
         flags = model.particle_flags.numpy()[start:start+count]
         return cls(triangles[keep], model.tri_poses.numpy()[keep], model.tri_areas.numpy()[keep],
                    model.style3d.tri_aniso_ke.numpy()[keep], edges[valid]-start, weights,

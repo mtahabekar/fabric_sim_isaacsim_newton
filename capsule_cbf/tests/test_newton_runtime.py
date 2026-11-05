@@ -64,6 +64,18 @@ class ClothRuntimeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.advance(starts, np.full((4, 3), np.nan))
 
+    def test_inset_moves_corners_toward_center_and_stops(self):
+        _, runtime, corners, starts = fixture()
+        out = runtime.inset_corners(starts, .02, 1/60, move_frames=6, settle_frames=2)
+        expected = starts.copy()
+        expected[:, :2] -= .02*np.sign(starts[:, :2])
+        np.testing.assert_allclose(out, expected, atol=1e-7)
+        np.testing.assert_allclose(runtime.state.particle_q.numpy()[corners], expected, atol=1e-6)
+        np.testing.assert_allclose(runtime.state.particle_qd.numpy()[corners], 0., atol=1e-7)  # held
+        np.testing.assert_array_equal(runtime.inset_corners(starts, 0., 1/60), starts)
+        with self.assertRaises(ValueError):
+            runtime.inset_corners(starts, .06, 1/60)  # beyond the 6 cm corner offset
+
     @unittest.skipUnless(newton is not None and wp.is_cuda_available(), 'CUDA device unavailable')
     def test_cuda_graph_replay_matches_direct_stepping(self):
         for substeps in (3, 4):

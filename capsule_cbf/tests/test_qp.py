@@ -38,6 +38,25 @@ class SafetyQpTest(unittest.TestCase):
         self.assertEqual(status, 'relaxed_hard')
         self.assertLessEqual(u[0], .05+1e-12)
 
+    def test_hard_tolerance_keeps_command_off_the_box_vertex(self):
+        # 0.5 u0 >= 1 cannot be met in |u| <= 0.05: least violation 0.975 at u0 = 0.05.
+        args = (np.zeros(6), [[.5, 0, 0, 0, 0, 0]], [1.], [1], np.full(6, -.05), np.full(6, .05))
+        u, status, slacks, _ = safety_qp(*args)
+        self.assertEqual(status, 'relaxed_hard')
+        self.assertAlmostEqual(u[0], .05, places=6)
+        # One more unit of violation is accepted instead of pinning the command.
+        u, status, slacks, violation = safety_qp(*args, hard_tolerance=1.)
+        self.assertEqual(status, 'relaxed_hard')
+        self.assertAlmostEqual(slacks[1], .975, places=6)
+        np.testing.assert_allclose(u, 0., atol=1e-9)
+        self.assertAlmostEqual(violation, 1., places=6)
+
+    def test_hard_tolerance_unused_when_feasible(self):
+        u, status, _, _ = safety_qp(np.zeros(6), [[1, 0, 0, 0, 0, 0]], [.02], [1],
+                                    np.full(6, -.05), np.full(6, .05), hard_tolerance=1.)
+        self.assertEqual(status, 'feasible')
+        self.assertAlmostEqual(u[0], .02, places=6)
+
 
 if __name__ == '__main__':
     unittest.main()

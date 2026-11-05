@@ -201,10 +201,19 @@ class SensitivityCbfController:
 
     def _score(self, h_now, tension_now, strain_now, qc):
         """Residuals of predictions arriving now, corrected for command changes."""
+        # Physical upper bounds of the stretch outputs: tension_limit - |F| with
+        # |F| >= 0, and 1 - KS with KS >= max |cosine|/limit >= 0. The linear
+        # command correction (gradients of hundreds of N per m/s) can carry a
+        # prediction far past them, e.g. a negative tension after a leader step;
+        # unclipped, such impossible "model errors" inflated the conformal
+        # tension margin beyond the tension limit itself.
+        ceiling = {TENSION: self.settings.tension_limit, STRAIN: 1.}
         for kind, key, k, made, predicted, grad, assumed in self.pending.pop(self.frame, []):
             actual = self._mean_velocity(made, self.frame)
             if actual is not None:
                 predicted = predicted+grad@(actual-assumed)
+            if kind in ceiling:
+                predicted = min(predicted, ceiling[kind])
             measured = (h_now[key] if kind == CLEARANCE else
                         self.settings.tension_limit-tension_now[key] if kind == TENSION else
                         1.-strain_now[key])
@@ -345,7 +354,8 @@ class SensitivityCbfController:
 
         begin = time.perf_counter()
         center = (nominal.ravel()+cfg.command_smoothing*u_ref.ravel())/(1+cfg.command_smoothing)
-        u, status, slacks, violation = safety_qp(center, rows[keep], rhs[keep], groups[keep], lower, upper)
+        u, status, slacks, violation = safety_qp(center, rows[keep], rhs[keep], groups[keep], lower, upper,
+                                                 hard_tolerance=cfg.hard_relaxation_tolerance)
         timing['qp_ms'] = 1000*(time.perf_counter()-begin)
         command = u.reshape(2, 3)
 

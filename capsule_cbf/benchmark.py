@@ -1,7 +1,7 @@
 """Closed-loop scenarios on the headless Newton plant: safety, stretch and timing.
 
 Controllers: nominal (no filter) and sensitivity. Scenarios start from a
-settled, safe cloth. Run with a Newton 1.2.x environment, e.g.
+settled, safe cloth. Run with Newton 1.6 (Isaac Sim 6.2), e.g.
     python -m capsule_cbf.benchmark --output /tmp/bench
 See SENSITIVITY_CBF_REPORT.md, section 10.
 """
@@ -30,7 +30,7 @@ SCENARIOS = {
 }
 
 
-def make_controller(name, plant, cfg):
+def make_controller(name, plant, cfg, home):
     if name == 'nominal':
         return None
     if name != 'sensitivity':
@@ -40,12 +40,12 @@ def make_controller(name, plant, cfg):
     red = ReducedCloth(plant.model, plant.patch, plant.corner_ids, plant.offsets, FRAME_DT,
                        cells=cfg.prediction_grid_cells, substeps=cfg.model_substeps,
                        stride=cfg.horizon_stride, jacobian=cfg.model_jacobian)
-    return SensitivityCbfController(plant.capsule, red, plant.rest[plant.corners], .008, cfg, FRAME_DT)
+    return SensitivityCbfController(plant.capsule, red, home, .008, cfg, FRAME_DT)
 
 
-def nominal_command(plant, cfg, leaders, corners):
-    rest = plant.rest[plant.corners]
-    error = corners[2:]+rest[:2]-rest[2:]-corners[:2]
+def nominal_command(home, cfg, leaders, corners):
+    """home: initial corner positions (the formation reference)."""
+    error = corners[2:]+home[:2]-home[2:]-corners[:2]
     error[:, 2] = 0
     return leaders+cfg.formation_gain*error
 
@@ -54,13 +54,16 @@ def run(args, controller_name, scenario):
     leader_velocity, task, motion, hold = SCENARIOS[scenario]
     cfg = load_settings(args.config)
     plant = build_plant(args.device, args.grid, args.areal_density, args.cloth_z,
-                        iterations=args.plant_iterations, linear_iterations=args.plant_linear_iterations)
+                        iterations=args.plant_iterations, linear_iterations=args.plant_linear_iterations,
+                        inset=args.inset, top_cap_mode=cfg.top_cap_mode,
+                        top_radius_scale=cfg.top_cap_radius_scale)
+    home = plant.starts.copy()
     strain = TriangleStrain(plant.model.tri_indices.numpy(), plant.model.tri_poses.numpy(),
                             cfg.weft_strain_limit, cfg.warp_strain_limit, cfg.shear_limit)
     zero = np.zeros((2, 3))
     for _ in range(args.settle_frames):
         plant.step(zero, zero)
-    ctrl = make_controller(controller_name, plant, cfg)
+    ctrl = make_controller(controller_name, plant, cfg, home)
     from capsule_cbf.cloth_model import ClothMechanics
     fine = ClothMechanics.from_newton(plant.model)
     patches = [plant.patch[plant.corner_ids == c] for c in range(4)]
@@ -69,7 +72,7 @@ def run(args, controller_name, scenario):
         leaders = leader_velocity if frame < motion else zero
         q, v = plant.state()
         corners = q[plant.corners]
-        nominal = nominal_command(plant, cfg, leaders, corners)+task
+        nominal = nominal_command(home, cfg, leaders, corners)+task
         begin = time.perf_counter()
         if ctrl is None:
             command, debug = nominal, dict(status='nominal')
@@ -128,6 +131,8 @@ def main():
     p.add_argument('--areal-density', type=float, default=.2)
     p.add_argument('--cloth-z', type=float, default=.85)
     p.add_argument('--settle-frames', type=int, default=90)
+    p.add_argument('--inset', type=float, default=0.,
+                   help='Gripper pre-roll toward the center (m); the Isaac simulator uses 0.05')
     p.add_argument('--plant-iterations', type=int, default=10)
     p.add_argument('--plant-linear-iterations', type=int, default=16)
     p.add_argument('--config', type=Path, default=Path(__file__).with_name('config.json'),

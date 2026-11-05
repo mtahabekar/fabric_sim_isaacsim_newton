@@ -17,7 +17,7 @@ isaac_sim:
   # Isaac Sim's python.sh. The ISAAC_PYTHON_SH environment variable and the
   # isaac_python launch argument override it. working_directory defaults to
   # the directory of python.sh.
-  python_sh: /media/taha/ExtermeLinux/isaacsim/python.sh
+  python_sh: /media/taha/ExtermeLinux/isaacsim6.2/python.sh
   script: fabric_newton_isaacsim.py
 
   # Simulator flags (`python.sh fabric_newton_isaacsim.py --help`):
@@ -36,6 +36,7 @@ isaac_sim:
     table_hy: 0.22
     table_hz: 0.16
     gripper_size: 3
+    gripper_inset: 0.05        # m toward the center in x and y before frame 0 (cloth sags)
     substeps: 8
     iterations: 10
     linear_iterations: 16

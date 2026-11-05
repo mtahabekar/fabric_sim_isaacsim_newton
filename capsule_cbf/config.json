@@ -1,6 +1,7 @@
 {
   "controller": "sensitivity",
   "top_cap_mode": "centered_sphere",
+  "top_cap_radius_scale": 2.0,
   "sectors": 24,
   "bands": 18,
   "margin": 0.05,
@@ -9,6 +10,7 @@
   "max_speed": 0.5,
   "follower_max_accel": 3.0,
   "command_smoothing": 0.25,
+  "hard_relaxation_tolerance": 1.0,
   "prediction_grid_cells": 14,
   "horizon_frames": 20,
   "horizon_stride": 2,

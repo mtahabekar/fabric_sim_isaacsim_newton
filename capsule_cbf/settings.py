@@ -7,7 +7,7 @@ from dataclasses import dataclass, fields
 import json
 from pathlib import Path
 import numpy as np
-from .capsule import TOP_CAP_MODES
+from .capsule import DEFAULT_TOP_RADIUS_SCALE, TOP_CAP_MODES
 
 CONTROLLERS = ('sensitivity', 'none')
 MODEL_JACOBIANS = ('affine', 'trajectory', 'frozen')
@@ -20,6 +20,10 @@ class Settings:
     controller: str = 'sensitivity'
     # Obstacle envelope and its USD wireframe (sectors x bands lines).
     top_cap_mode: str = 'centered_sphere'
+    # centered_sphere cap: sphere radius in units of the box half diagonal; the
+    # sphere always passes through the four top corners. 1 = box-centered sphere
+    # (19 cm above the table top), 2 = flatter cap (7.3 cm).
+    top_cap_radius_scale: float = DEFAULT_TOP_RADIUS_SCALE
     sectors: int = 24
     bands: int = 18
     margin: float = 0.05  # m of clearance kept from the capsule (h = d - margin)
@@ -30,6 +34,10 @@ class Settings:
     max_speed: float = 0.5  # m/s per follower; zero disables the bound
     follower_max_accel: float = 3.0  # m/s^2 per axis; zero disables the rate box
     command_smoothing: float = 0.25  # weight of the previous command in the QP objective
+    # Extra relaxation (row units: 1 N tension, 5 % of a strain limit) of an
+    # infeasible stretch group, so the command stays near nominal instead of
+    # being pinned to the rate-box vertex of the least-violation LP (qp.py).
+    hard_relaxation_tolerance: float = 1.0
     # Prediction model (section 5): coarse grid, horizon, linearization.
     prediction_grid_cells: int = 14  # base cells per material axis; 0 predicts on the full mesh
     horizon_frames: int = 20  # plant frames covered by the prediction (0.33 s at 60 Hz)

@@ -31,13 +31,13 @@ class ClothRuntime:
             raise ValueError('Positive substeps and timestep required')
         self.model, self.device = model, model.device
         self.substeps, self.dt = substeps, dt
-        # Newton 1.2.x precomputes the projective-dynamics matrix in __init__.
+        # Newton 1.6 precomputes the projective-dynamics matrix in __init__.
         self.solver = solver or newton.solvers.SolverStyle3D(
             model, iterations=iterations, linear_iterations=linear_iterations)
         # Never use model.contacts(pipeline) or model.collide(pipeline): those
         # replace the pipeline cached on the shared Model.
         self.pipeline = newton.CollisionPipeline(model, broad_phase='explicit',
-                                                 soft_contact_margin=model.soft_contact_margin)
+                                                 soft_contact_gap=model.soft_contact_margin)
         self.contacts = self.pipeline.contacts()
         self.state = model.state()
         self.scratch = model.state()
@@ -87,6 +87,33 @@ class ClothRuntime:
         # Canonical output buffer, also for odd substep counts inside graphs.
         if a is not self.state:
             self.state.assign(a)
+
+    def inset_corners(self, starts, inset, frame_dt, move_frames=60, settle_frames=60):
+        """Pre-roll: move the four corners `inset` m toward the cloth center along x and y.
+
+        The flat spawned sheet is held at its corners; bringing the grippers in
+        gives the cloth slack, so it hangs with natural sag instead of being
+        stretched flat. The patches move on a cosine (zero start/end velocity)
+        profile over `move_frames`, then hold for `settle_frames`. Returns the
+        new corner positions.
+        """
+        starts = np.asarray(starts, dtype=float).copy()
+        if inset <= 0:
+            return starts
+        center = starts[:, :2].mean(axis=0)
+        direction = np.zeros((4, 3))
+        direction[:, :2] = -np.sign(starts[:, :2]-center)
+        if np.any(direction[:, :2] == 0) or inset >= np.abs(starts[:, :2]-center).min():
+            raise ValueError('Gripper inset must be smaller than the corner distance from the center')
+        if move_frames < 1 or settle_frames < 0:
+            raise ValueError('move_frames must be positive and settle_frames nonnegative')
+        travel = .5*inset*(1-np.cos(np.pi*np.arange(move_frames+1)/move_frames))
+        for k in range(move_frames+settle_frames):
+            step = travel[k+1]-travel[k] if k < move_frames else 0.
+            commands = direction*step/frame_dt
+            self.advance(starts, commands)
+            starts = starts+commands*frame_dt
+        return starts
 
     def advance(self, starts, commands):
         """Advance one frame: corner c moves from starts[c] at velocity commands[c]."""

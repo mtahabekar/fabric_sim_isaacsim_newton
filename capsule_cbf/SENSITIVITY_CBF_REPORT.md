@@ -103,7 +103,8 @@ f_i = -A_t [ k_u (l_u-1) a_i u + k_v (l_v-1) b_i v + k_s c (b_i u + a_i v) ]
 
 with `a_i, b_i` the columns of `[-(D^-1)_0-(D^-1)_1; D^-1]`. Bending is the
 quadratic isometric model `f_bend = -Q q` with constant PSD `Q = sum_e w_e w_e^T`
-(cotangent weights). The exact Jacobian `J = df/dq` reuses the repository's
+(cotangent weights scaled by `sqrt(3 k_e / A_e)`, Newton 1.6's `eval_bend_kernel`;
+Newton 1.2.1 used the scale `k_e / A_e`, see Section 10.6). The exact Jacobian `J = df/dq` reuses the repository's
 previously verified element derivative (`stretch_force_blocks`).
 
 **Stiffness projection.** `K = -J` is indefinite under compression (negative
@@ -236,7 +237,10 @@ Findings:
 ### 6.1 Outputs
 
 1. **Capsule clearance** `h_i = d_capsule(p_i) - r_p - m` (capsule kept as the
-   obstacle envelope). Candidate points are strict local minima, over a
+   obstacle envelope; since November 2026 its top cap is a sphere of twice the
+   box half-diagonal, 0.70 m, through the four top corners: 7.3 cm above the
+   table instead of 19 cm, `top_cap_radius_scale`; the results in Section 10
+   were obtained with the box-centered cap, scale 1). Candidate points are strict local minima, over a
    3-ring neighborhood of the **rest-mesh graph**, of the *predicted*
    `min(h_i(0), h_i(t_N/2), h_i(t_N))`, kept when `<= prediction_activation`
    (0). A constraint therefore exists 0.33 s before the cloth would reach the
@@ -318,6 +322,10 @@ during the interval, so they measure model error only. This follows
 conformal-prediction safety for planning (Lindemann et al., 2023); the sliding
 window adds adaptivity (Gibbs and Candes, 2021). Closed-loop data are not
 exchangeable, so this is a calibrated heuristic, not a probability guarantee.
+Corrected stretch predictions are clipped to their physical range (tension
+`>= 0`, KS strain `>= 0`) before scoring: the linear command correction can
+otherwise predict a negative tension after a leader step, and those impossible
+"errors" drove the tension margin to 52 N, above the 20 N limit (Nov 2026).
 
 ### 7.2 Leader uncertainty
 
@@ -359,6 +367,16 @@ hard group yield slightly and made the NNLS dual lose precision (a numerically
 infeasible stage was silently reported `feasible`); the primal is now verified
 and relaxation uses the LP stages. A shared slack across mixed units (N and
 strain fraction) is avoided by the dimensionless row scaling.
+
+A third defect (Nov 2026): an infeasible hard group relaxed exactly to its
+least uniform violation leaves the LDP only the LP's rate-box vertex. When the
+followers have little authority over the violated rows (one leader moving
+alone, or both leaders stepping upward) they were driven to the box limits,
+chattered there, and kept moving 0.6-1.15 m after the leaders stopped. The hard
+group is now relaxed by its least violation plus `hard_relaxation_tolerance`
+(1 row unit = 1 N / 5 % of a strain limit), and the follower command stays
+within 0.08 m/s of nominal. The validated scenarios never enter `relaxed_hard`
+and are unchanged.
 
 ## 9. Step 7: integration
 
@@ -491,6 +509,67 @@ field `predicted_min_clearance_barrier` was `Infinity`, which is not valid JSON
 for non-Python subscribers; it is now `null` and the test serializes with
 `allow_nan=False`.
 
+### 10.6 Migration to Isaac Sim 6.2 / Newton 1.6.1 / Warp 1.17 (November 2026)
+
+Sections 2-10.5 were produced with Isaac Sim 6.0 (Newton 1.2.1, Warp 1.13).
+The repository now targets Isaac Sim 6.2 and its bundled Newton 1.6.1 and
+Warp 1.17. Relevant upstream changes and what was done:
+
+| Change in Newton 1.6 / Isaac 6.2 | Effect | Repository change |
+|---|---|---|
+| Style3D `eval_bend_kernel`: force `-(3k/A) w wᵀ x` (Bergou et al., 2006), edge rest area = (sum of panel cross products)/2; 1.2.1 used `-(k/A)² w wᵀ x` with area /3, inconsistent with its own PD matrix `k/A` | same `edge_ke` gives about 7x softer bending on the 56x56 grid; stretch, contact and gravity unchanged | `ClothMechanics.from_newton` scales the cotangent weights by `sqrt(3k/A)`; force agreement test passes at 2e-5 |
+| `CollisionPipeline(soft_contact_margin=...)` deprecated for `soft_contact_gap` (same meaning) | warning | `newton_runtime.py` passes `soft_contact_gap` |
+| `SolverStyle3D(model, *, ...)` keyword-only; solver-private particle flags (zero-mass particles deactivated) | none (keywords already used; pinned patches stay inactive) | none |
+| Style3D body contact adds `shape_margin` (default 0) | none | none |
+| `isaacsim.core.utils` moved to `extsDeprecated` | deprecated imports | ROS bridge enabled through Kit's extension manager; camera set with `ViewportCameraState` |
+
+Same working tree on both versions (headless GPU plant, 56x56, inset 0; the
+1.2.1 run restores the old bending formula and contact keyword through a
+shim; the GPU was shared with another Kit process, so timings are indicative):
+
+| Scenario / controller | min barrier (cm) 1.2.1 / 1.6.1 | max tension (N) 1.2.1 / 1.6.1 | statuses (both) | CBF p50 (ms) 1.2.1 / 1.6.1 |
+|---|---|---|---|---|
+| descend / nominal | 4.45 / 4.46 | 5.74 / 7.16 | nominal 260 | - |
+| descend / sensitivity | 4.45 / 4.21 | 5.75 / 7.16 | feasible 260 | 12.7 / 13.0 |
+| pull / nominal | 37.9 / 37.9 | 445 / 445 (256 frames over) | nominal 260 | - |
+| pull / sensitivity | 36.6 / 36.6 | 19.94 / 19.86 | feasible 260 | 16.1 / 12.9 |
+| descend_pull / nominal | 6.40 / 6.40 | 257 / 256 | nominal 260 | - |
+| descend_pull / sensitivity | 3.81 / 4.06 | 18.35 / 19.00 | feasible 260 | 16.2 / 16.4 |
+
+Open-loop model check (`validate_sensitivity.py`, default variant), median
+cosine of dh/du at frames 2/6/10/20: settled 0.997-0.999 (1.2.1) vs
+0.998-0.999 (1.6.1); descending 0.82/0.91/0.93/0.94 vs 0.81/0.89/0.92/0.93;
+relative error descending at frame 20: 0.74 vs 0.45. The validated behaviour
+carries over; the softer bending mainly raises the descend rest tension
+(5.7 -> 7.2 N). `test_conflicting_descent_*` now starts at 0.54 m: with the
+default top cap (scale 2, 7.3 cm above the table) the former 0.66 m start no
+longer begins near the margin (on either Newton version).
+
+**Gripper inset (5 cm), descend from 0.85 m** - the stretch-vs-clearance
+conflict regime outside the validated range (headless, sensitivity, n = 3-4):
+
+| Plant | min barrier (cm) | frames inside margin | max tension (N) |
+|---|---|---|---|
+| Newton 1.2.1 | +0.03 to -0.46 | 0-21 | 14.2-18.7 |
+| Newton 1.6.1, `edge_ke` mapped to 1.2.1's effective bending (`k' = 3k²/(4 cell²)`, i.e. 0.0133/0.0033/0.00083) | -0.30 to -1.20 | 23-49 | 14.7-17.9 |
+| Newton 1.6.1, default `edge_ke` | -1.82 to -3.24 | 61-88 | 13.9-23.0 (one run 8 frames over 20 N) |
+
+The conflict is sharper on 1.6.1; the softer bending explains about half of
+it (the rest presumably comes from the other Style3D fixes, e.g. the bend
+force now matching the PD matrix). Starting at 1.05 m (the `full_sim.yaml`
+default) with the inset stays safe on 1.6.1: min barrier +7.9 cm, tension
+<= 5.7 N, no violations (n = 2). Default `edge_ke` was not retuned.
+
+**Isaac Sim 6.2 smoke** (Kit + ROS 2 bridge, headless, `--cloth-start-z 0.85
+--smoke-frames 260 --smoke-leader-velocity 0 0 -0.1`, inset 0.05, GPU shared
+with another Kit process): runs to completion, gripper and ground checks pass,
+viewport capture works; min clearance 1.7 cm (margin entered, no contact),
+max tension 11.8 N, statuses warm-up 90 / feasible 50 / relaxed_hard 86 /
+relaxed_soft 34, CBF 22.1 ms p50 / 27.9 ms p95, frame 46.8 ms p50. This
+matches the inset conflict above (not the 5.43 cm of Section 10.5, which had
+no inset and the scale-1 top cap). The first 6.2 start compiles Warp kernels
+into Kit's cache (several minutes).
+
 ## 11. Limitations and open problems
 
 1. **Not a certificate.** Linearized prediction plus empirical conformal
@@ -531,10 +610,16 @@ for non-Python subscribers; it is now `null` and the test serializes with
 
 ## 12. Reproduction
 
+Newton 1.6.1 / Isaac Sim 6.2 (results in `results/` before Section 10.6 were
+produced with Newton 1.2.1):
+
 ```bash
-python3 -m venv /tmp/newton121 && /tmp/newton121/bin/pip install newton==1.2.1 warp-lang==1.13.0 numpy scipy matplotlib
-export PYTHONPATH=$PWD OPENBLAS_NUM_THREADS=1
-P=/tmp/newton121/bin/python
+# Isaac Sim 6.2's interpreter and libraries, without Kit (or a venv with
+# newton==1.6.1 warp-lang==1.17.0 numpy scipy matplotlib):
+ISAAC=/media/taha/ExtermeLinux/isaacsim6.2
+export PYTHONPATH=$PWD:$ISAAC/extscache/omni.warp.core-1.17.0+lx64:$ISAAC/exts/isaacsim.pip.newton/pip_prebundle:$ISAAC/exts/omni.pip.compute/pip_prebundle:$(ls -d $ISAAC/extscache/omni.kit.pip_archive-*/pip_prebundle)
+export OPENBLAS_NUM_THREADS=1
+P=$ISAAC/kit/python/bin/python3
 $P -m unittest discover -s capsule_cbf/tests -t .
 R=capsule_cbf/results
 $P -m capsule_cbf.validate_sensitivity --all-variants --output $R/validation/sens_affine_it10.json
@@ -544,7 +629,7 @@ $P -m capsule_cbf.benchmark --controllers nominal,sensitivity --output $R/closed
 $P -m capsule_cbf.plot_report --results $R --output capsule_cbf/figures
 # Isaac (Kit + ROS 2):
 source /opt/ros/jazzy/setup.bash && source ../../install/setup.bash
-/media/taha/ExtermeLinux/isaacsim/python.sh fabric_newton_isaacsim.py --headless --cloth-start-z 0.85 \
+$ISAAC/python.sh fabric_newton_isaacsim.py --headless --cloth-start-z 0.85 \
    --smoke-frames 260 --smoke-leader-velocity 0 0 -0.1 --smoke-output /tmp/capsule-driven
 ```
 
