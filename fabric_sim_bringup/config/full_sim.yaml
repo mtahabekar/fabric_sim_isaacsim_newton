@@ -30,7 +30,9 @@ isaac_sim:
     cloth_center_x: 0.0
     cloth_center_y: 0.0
     cloth_start_z: 1.05        # room for start-up sag above the capsule envelope
-    areal_density: 0.2         # kg/m^2
+    cloth_material: dry_carbon_twill  # appearance; legacy_red restores the old solid color
+    yarn_pitch: 0.002          # m between yarns; 2x2 twill repeats every four yarns
+    areal_density: 0.2         # kg/m^2: nominal 200 gsm dry carbon; calibration pending
     particle_radius: 0.008
     table_hx: 0.22             # the CBF capsule is built from these half extents
     table_hy: 0.22
@@ -41,6 +43,7 @@ isaac_sim:
     iterations: 10
     linear_iterations: 16
     state_publish_every: 3
+    # Existing uncalibrated Style3D mechanics, retained until real-material tests.
     tri_ke_weft: 30000.0
     tri_ke_warp: 30000.0
     tri_ke_shear: 6000.0

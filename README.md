@@ -1,6 +1,14 @@
 # Fabric simulation with a sensitivity control barrier function
 
 Collaborative cloth manipulation in Isaac Sim with a Newton Style3D cloth.
+The sheet defaults to a dry 2×2 woven carbon-fiber appearance (nominal 200 g/m²),
+with material-attached yarn detail and directional highlights. Mechanical
+parameters remain the existing **uncalibrated** Style3D baseline pending tests
+with the real fabric.
+For the proposed sensor-based Oarbot estimator test and robot–cloth force coupling,
+see the [integration and solver-coupling report](FABRIC_ROBOT_COUPLING_REPORT.md).
+The [dry carbon-fabric material plan](CARBON_FABRIC_MATERIAL_PLAN.md) covers the proposed
+woven appearance, physical calibration and camera realism.
 Four grippers hold the corners of a 0.84 m x 0.84 m cloth. Two **leaders**
 (a human or a planner) are commanded over ROS 2; the two **followers** are
 commanded by a safety filter, the **sensitivity CBF**, that keeps the cloth
@@ -100,6 +108,16 @@ contact, solver iterations, `headless`), the CBF settings file
 (e.g. `{controller: none}` for an unfiltered run), and teleop parameters.
 Every CBF setting is documented in `capsule_cbf/settings.py`. The capsule is
 built from the table half extents, so obstacle and filter always agree.
+
+Cloth appearance is independent of mechanics: `cloth_material: dry_carbon_twill`
+and `yarn_pitch: 0.002` select the default dry carbon weave with 2 mm yarn spacing.
+The local material and maps are in [`assets/materials/dry_carbon_twill/`](assets/materials/dry_carbon_twill/README.md).
+Rest-space UVs keep the weave attached while the cloth bends and shears, and a
+USD Preview Surface fallback supports viewers without MDL. Direct runs accept
+`--cloth-material dry_carbon_twill --yarn-pitch 0.002`; `--cloth-material legacy_red`
+restores the previous solid color. These flags do not change stiffness, friction,
+collision thickness or the solver. Run diagnostics record the appearance, yarn
+pitch, areal density and uncalibrated mechanical status.
 
 Newton 1.6's Style3D solver ignores `tri_ka`, `tri_kd`, `edge_kd` and
 `contact_radius`; they are kept as model parameters only. `contact_margin`

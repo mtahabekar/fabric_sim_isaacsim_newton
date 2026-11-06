@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: Apache-2.0
+// Original dry 2x2 carbon twill appearance. No resin/clear-coat layer.
+// Illustrative optical parameters; mechanical calibration is independent.
+mdl 1.7;
+import ::base::*;
+import ::df::*;
+import ::math::*;
+import ::state::*;
+import ::tex::*;
+
+export material DryCarbonTwill(
+    uniform float2 texture_scale = float2(105.0),
+    uniform float normal_strength = 1.0
+) = let {
+    base::texture_coordinate_info uvw = base::transform_coordinate(
+        transform: base::rotation_translation_scale(
+            scaling: float3(texture_scale.x, texture_scale.y, 1.0)),
+        coordinate: base::coordinate_source(texture_space: 0));
+    color albedo = base::file_texture(
+        texture: texture_2d("carbon_twill_basecolor.png", tex::gamma_srgb), uvw: uvw).tint;
+    float warp_weight = base::file_texture(
+        texture: texture_2d("carbon_twill_warp_mask.png", tex::gamma_linear),
+        uvw: uvw, mono_source: base::mono_average).mono;
+    float roughness = base::file_texture(
+        texture: texture_2d("carbon_twill_roughness.png", tex::gamma_linear),
+        uvw: uvw, mono_source: base::mono_average).mono;
+    float3 normal = base::tangent_space_normal_texture(
+        texture: texture_2d("carbon_twill_normal.png", tex::gamma_linear),
+        factor: normal_strength, uvw: uvw);
+    // Two material-aligned lobes, blended by the filtered over/under mask.
+    // Texture filtering naturally blends the two families at a distance.
+    bsdf warp = df::microfacet_ggx_smith_bsdf(
+        roughness_u: .22, roughness_v: roughness*roughness,
+        tangent_u: state::texture_tangent_v(0));
+    bsdf weft = df::microfacet_ggx_smith_bsdf(
+        roughness_u: .22, roughness_v: roughness*roughness,
+        tangent_u: state::texture_tangent_u(0));
+    bsdf yarn_specular = df::normalized_mix(df::bsdf_component[](
+        df::bsdf_component(warp_weight, warp),
+        df::bsdf_component(1.0-warp_weight, weft)));
+    bsdf surface = df::custom_curve_layer(
+        normal_reflectivity: .025, grazing_reflectivity: .6, exponent: 5.0,
+        layer: yarn_specular,
+        base: df::diffuse_reflection_bsdf(tint: albedo, roughness: .4));
+} in material(
+    thin_walled: true,
+    surface: material_surface(scattering: surface),
+    backface: material_surface(scattering: surface),
+    geometry: material_geometry(normal: normal));

@@ -34,6 +34,7 @@ from capsule_cbf.cloth_state import ClothState, particle_state_payload  # noqa: 
 from capsule_cbf.reduced_cloth import ReducedCloth  # noqa: E402
 from capsule_cbf.sensitivity_cbf import SensitivityCbfController  # noqa: E402
 from capsule_cbf.settings import load_settings  # noqa: E402
+from fabric_appearance import MATERIALS, bind_cloth_material, cloth_vertex_normals  # noqa: E402
 
 REPO = Path(__file__).resolve().parent
 CORNER_NAMES = ('follower_left', 'follower_right', 'leader_left', 'leader_right')
@@ -53,7 +54,11 @@ def build_parser():
     a('--cloth-start-z', type=float, default=1.05,
       help='Initial cloth height (m); leave room for start-up sag above the capsule.')
     a('--areal-density', type=float, default=0.2,
-      help='Cloth mass per area (kg/m^2); woven fabric is about 0.1-0.4.')
+      help='Cloth mass per area (kg/m^2); default is nominal 200 gsm dry carbon fabric.')
+    a('--cloth-material', choices=MATERIALS, default='dry_carbon_twill',
+      help='Cloth appearance only; mechanical coefficients remain uncalibrated.')
+    a('--yarn-pitch', type=float, default=0.002,
+      help='Rest-space yarn spacing in metres (dry twill weave repeat = four yarns).')
     a('--particle-radius', type=float, default=0.008, help='Cloth particle radius (m).')
     a('--table-hx', type=float, default=0.22, help='Table half size X (m).')
     a('--table-hy', type=float, default=0.22, help='Table half size Y (m).')
@@ -404,11 +409,15 @@ class FabricSimulation:
         mesh = UsdGeom.Mesh.Define(self.stage, '/World/Cloth')
         mesh.CreateDoubleSidedAttr(True)
         mesh.CreateSubdivisionSchemeAttr('none')
-        mesh.CreateDisplayColorPrimvar('constant').Set([Gf.Vec3f(.75, .15, .15)])
+        bind_cloth_material(mesh, self.model.particle_q.numpy()[start:start+self.cloth_count],
+                            self.args.cloth_material, self.args.yarn_pitch)
         triangles = self.model.tri_indices.numpy()-start
+        self.visual_triangles = triangles
         mesh.CreateFaceVertexCountsAttr([3]*len(triangles))
         mesh.CreateFaceVertexIndicesAttr(triangles.ravel().tolist())
         mesh.CreatePointsAttr(vec3f_array(self.cloth_positions()))
+        mesh.CreateNormalsAttr(vec3f_array(cloth_vertex_normals(self.cloth_positions(), triangles)))
+        mesh.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
         self.cloth_mesh = mesh
         self.corner_markers = []
         colors = ((.15, .35, 1.), (.15, .35, 1.), (.1, .75, .2), (.1, .75, .2))  # followers blue, leaders green
@@ -435,6 +444,7 @@ class FabricSimulation:
 
     def _update_visuals(self, positions):
         self.cloth_mesh.GetPointsAttr().Set(vec3f_array(positions))
+        self.cloth_mesh.GetNormalsAttr().Set(vec3f_array(cloth_vertex_normals(positions, self.visual_triangles)))
         for op, p in zip(self.corner_markers, self.corner_positions()):
             op.Set(Gf.Vec3d(*map(float, p)))
         # Debug geometry edits force a stage sync; 5 Hz is enough.
@@ -522,6 +532,8 @@ class FabricSimulation:
         s = self.stats
         pct = lambda x, q: float(np.percentile(x, q)) if len(x) else None  # noqa: E731
         return dict(frames=self.frame, controller=self.settings.controller,
+                    material=dict(appearance=self.args.cloth_material, yarn_pitch_m=self.args.yarn_pitch,
+                                  areal_density_kg_m2=self.args.areal_density, mechanical_calibration='uncalibrated'),
                     run_min_clearance=s['min_clearance'], run_max_tension=s['max_tension'],
                     run_max_correction=s['max_correction'], status_counts=s['status'],
                     cbf_ms_p50=pct(s['cbf_ms'], 50), cbf_ms_p95=pct(s['cbf_ms'], 95),
@@ -569,6 +581,8 @@ class FabricSimulation:
         print(f'[fabric_sim] cloth {a.grid_x}x{a.grid_y} cells ({self.cloth_count} particles), '
               f'areal density {a.areal_density} kg/m^2 -> {self.mass_per_particle:.3e} kg/particle, '
               f'center ({a.cloth_center_x:.3f}, {a.cloth_center_y:.3f}, {a.cloth_start_z:.3f}) m')
+        print(f'[fabric_sim] appearance: {a.cloth_material}, yarn pitch {a.yarn_pitch*1000:g} mm; '
+              'mechanical parameters UNCALIBRATED (existing Style3D baseline)')
         print(f'[fabric_sim] solver: {self.substeps} substeps, {a.iterations} PD / {a.linear_iterations} PCG '
               f'iterations, CUDA graph {"on" if self.motion.graph is not None else "off"}; '
               f'gripper patches {a.gripper_size}x{a.gripper_size} ({len(self.patch)} pinned particles), '
